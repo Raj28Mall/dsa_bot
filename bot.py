@@ -1,203 +1,370 @@
-import discord
-from discord.ext import commands, tasks
-import aiosqlite
+import asyncio
 import datetime
-import zoneinfo
 import os
+import zoneinfo
+
+import aiosqlite
+import discord
+import httpx
+from discord import app_commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-# Load environment variables
+import leetcode_graphql as lc
+
 load_dotenv()
 
 MAIN_CHANNEL_ID = int(os.getenv("MAIN_CHANNEL_ID", "1504071059073405019"))
-BOT_ID = os.getenv("BOT_ID")
+BOT_TOKEN = os.getenv("BOT_ID")
+DB_PATH = "dsa_tracker.db"
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
-# Setup bot
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+MORNING_TITLE = "Start the day strong"
+MORNING_BODY = "Good morning — time to warm up with DSA. Pick a problem and get moving."
 
-# --- DATABASE SETUP ---
-async def setup_db():
-    async with aiosqlite.connect("dsa_tracker.db") as db:
-        await db.execute("""
+REMINDER_TITLE = "DSA reminder"
+REMINDER_BODY = "How is practice going? Keep the streak alive — solve something if you have not yet."
+
+GOODNIGHT_TITLE = "Good night"
+GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
+
+LB_FOOTER = "Daily counts follow LeetCode's calendar (UTC days)."
+
+SCHEDULE_TIMES = [
+    datetime.time(6, 0, tzinfo=IST),
+    datetime.time(12, 0, tzinfo=IST),
+    datetime.time(18, 0, tzinfo=IST),
+    datetime.time(22, 0, tzinfo=IST),
+    datetime.time(0, 0, tzinfo=IST),
+]
+
+
+def _parse_admin_ids() -> set[int]:
+    raw = os.getenv("ADMIN_USER_IDS", "")
+    out: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
+
+
+ADMIN_IDS = _parse_admin_ids()
+
+
+def _norm_leetcode_username(s: str) -> str:
+    s = s.strip()
+    if s.startswith("@"):
+        s = s[1:]
+    return s
+
+
+async def setup_db() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                solved INTEGER DEFAULT 0
+                leetcode_username TEXT
             )
-        """)
+            """
+        )
+        async with db.execute("PRAGMA table_info(users)") as cur:
+            cols = [row[1] for row in await cur.fetchall()]
+        if cols and "leetcode_username" not in cols:
+            await db.execute("ALTER TABLE users ADD COLUMN leetcode_username TEXT")
+        if cols and "solved" in cols:
+            try:
+                await db.execute("ALTER TABLE users DROP COLUMN solved")
+            except aiosqlite.OperationalError:
+                pass
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_leetcode_username "
+            "ON users(leetcode_username) WHERE leetcode_username IS NOT NULL"
+        )
         await db.commit()
 
-# --- THE CUSTOM INPUT POP-UP (MODAL) ---
-class CustomScoreModal(discord.ui.Modal, title='Enter Exact Score'):
-    questions_solved = discord.ui.TextInput(
-        label='How many questions did you solve?',
-        placeholder='e.g., 6, 7, 12...',
-        style=discord.TextStyle.short,
-        required=True,
-        max_length=3
-    )
 
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            points = int(self.questions_solved.value)
-            if points < 0:
-                await interaction.response.send_message("You can't solve negative questions! 🤨", ephemeral=True)
-                return
-        except ValueError:
-            await interaction.response.send_message("Please enter a valid number! 🔢", ephemeral=True)
-            return
+async def fetch_linked_users() -> list[tuple[int, str]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id, leetcode_username FROM users "
+            "WHERE leetcode_username IS NOT NULL AND leetcode_username != ''"
+        ) as cur:
+            return [(int(r[0]), str(r[1])) for r in await cur.fetchall()]
 
-        user_id = interaction.user.id
 
-        # 1. Update Database and Fetch New Total
-        async with aiosqlite.connect("dsa_tracker.db") as db:
-            await db.execute("""
-                INSERT INTO users (user_id, solved) VALUES (?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET solved = solved + ?
-            """, (user_id, points, points))
+async def fetch_stats_for_all(
+    http: httpx.AsyncClient,
+    rows: list[tuple[int, str]],
+) -> list[tuple[int, str, int | None, int | None]]:
+    sem = asyncio.Semaphore(4)
 
-            async with db.execute("SELECT solved FROM users WHERE user_id = ?", (user_id,)) as cursor:
-                total_solved = (await cursor.fetchone())[0]
+    async def one(uid: int, lc_name: str) -> tuple[int, str, int | None, int | None]:
+        async with sem:
+            t, w = await lc.fetch_stats_today_and_week(http, lc_name)
+            return uid, lc_name, t, w
 
-            await db.commit()
+    return list(await asyncio.gather(*[one(u, n) for u, n in rows]))
 
-        # 2. Quiet confirmation to the user
-        await interaction.response.send_message("Points successfully logged! 🚀", ephemeral=True)
 
-        # 3. PUBLIC HYPE ANNOUNCEMENT!
-        if points >= 15:
-            public_msg = f"**GOD TIER!** <@{user_id}> just dropped an insane **{points}** questions! (Total: {total_solved})"
-        elif points >= 8:
-            public_msg = f"**BEAST MODE!** <@{user_id}> just crushed **{points}** questions! (Total: {total_solved})"
-        elif points >= 5:
-            public_msg = f"**LOCKED IN!** <@{user_id}> put away **{points}** questions! (Total: {total_solved})"
-        else:
-            public_msg = f"@{user_id} logged **{points}** questions! (Total: {total_solved})"
-
-        # Sends it publicly to the group chat
-        await interaction.channel.send(public_msg)
-
-# --- THE POLL BUTTONS ---
-class DSAPoll(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def update_score(self, interaction: discord.Interaction, points: int, custom_msg: str):
-        user_id = interaction.user.id
-
-        # 1. Update Database and Fetch New Total
-        async with aiosqlite.connect("dsa_tracker.db") as db:
-            await db.execute("""
-                INSERT INTO users (user_id, solved) VALUES (?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET solved = solved + ?
-            """, (user_id, points, points))
-
-            async with db.execute("SELECT solved FROM users WHERE user_id = ?", (user_id,)) as cursor:
-                total_solved = (await cursor.fetchone())[0]
-
-            await db.commit()
-
-        # 2. Quiet confirmation to the user who clicked
-        await interaction.response.send_message(f"✅ Successfully logged {points} questions!", ephemeral=True)
-
-        # 3. PUBLIC ANNOUNCEMENT (Preserving your exact if-else structure!)
-        if points == 0:
-            public_msg = f"<@{user_id}> is taking a rest day today. (Total: {total_solved})\n"
-        elif points >= 5:
-            public_msg = f"**LOCKED IN!** <@{user_id}> just crushed **{points}** questions! Almost as locked in as jyotirya. (Total: {total_solved})\n"
-        else:
-            public_msg = f"<@{user_id}> logged **{points}** questions! (Total: {total_solved})\n"
-
-        # Sends it publicly to the group chat
-        await interaction.channel.send(public_msg)
-
-    # --- ROW 1 (The Mortals) ---
-    @discord.ui.button(label="0 (Rest Day 😴)", style=discord.ButtonStyle.secondary, custom_id="btn_0", row=0)
-    async def btn_0(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_score(interaction, 0, "Taking a break? No worries, rest up and come back stronger tomorrow! 🌱")
-
-    @discord.ui.button(label="1 (Honest Work 🌾)", style=discord.ButtonStyle.primary, custom_id="btn_1", row=0)
-    async def btn_1(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_score(interaction, 1, "1 exact question down! Keep that streak alive. 🐢")
-
-    @discord.ui.button(label="2 (Getting There 🚶)", style=discord.ButtonStyle.primary, custom_id="btn_2", row=0)
-    async def btn_2(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_score(interaction, 2, "2 exact questions! Great job today.")
-
-    @discord.ui.button(label="3 (On a Roll 🎳)", style=discord.ButtonStyle.success, custom_id="btn_3", row=0)
-    async def btn_3(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_score(interaction, 3, "3 exact questions! Okay, we see you cooking now! 👨‍🍳")
-
-    # --- ROW 2 (The Tryhards & The Custom Input) ---
-    @discord.ui.button(label="4 (Solid 🧱)", style=discord.ButtonStyle.success, custom_id="btn_4", row=1)
-    async def btn_4(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_score(interaction, 4, "4 exact questions! Putting in the heavy work. 💪")
-
-    @discord.ui.button(label="5 (Locked In 🔒)", style=discord.ButtonStyle.success, custom_id="btn_5", row=1)
-    async def btn_5(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.update_score(interaction, 5, "5 exact questions! Absolute locked-in behavior. 🧠")
-
-    # THE NEW MAGIC BUTTON
-    @discord.ui.button(label="Custom Amount ⌨️", style=discord.ButtonStyle.danger, custom_id="btn_custom", row=1)
-    async def btn_custom(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # This tells Discord to pop up our custom text box!
-        await interaction.response.send_modal(CustomScoreModal())
-
-# --- DAILY REMINDER TASK ---
-# Set the time you want the reminder to go off (UTC time)
-ist_tz = zoneinfo.ZoneInfo("Asia/Kolkata")
-poll_time = datetime.time(hour=22, minute=0, tzinfo=ist_tz)
-
-@tasks.loop(time=poll_time)
-async def daily_reminder():
-    channel = bot.get_channel(MAIN_CHANNEL_ID)
-    if channel:
-        embed = discord.Embed(
-            title="Daily DSA Check-in! 🚀",
-            description="How many questions did you solve today? Be honest!",
-            color=discord.Color.blue()
+def _sort_leaderboard(
+    stats: list[tuple[int, str, int | None, int | None]],
+) -> list[tuple[int, str, int | None, int | None]]:
+    def key(r: tuple[int, str, int | None, int | None]) -> tuple[int, int]:
+        _, _, t, w = r
+        return (
+            -(t if t is not None else -1),
+            -(w if w is not None else -1),
         )
-        await channel.send(embed=embed, view=DSAPoll())
 
-# --- LEADERBOARD COMMAND ---
-@bot.command()
-async def leaderboard(ctx):
-    async with aiosqlite.connect("dsa_tracker.db") as db:
-        async with db.execute("SELECT user_id, solved FROM users ORDER BY solved DESC LIMIT 10") as cursor:
-            rows = await cursor.fetchall()
+    return sorted(stats, key=key)
 
+
+def build_leaderboard_description(
+    ranked: list[tuple[int, str, int | None, int | None]],
+) -> str:
+    lines: list[str] = []
+    for i, (uid, _lc, t, w) in enumerate(ranked, 1):
+        ts = str(t) if t is not None else "—"
+        ws = str(w) if w is not None else "—"
+        lines.append(f"**{i}.** <@{uid}> — today: **{ts}** | last 7d: **{ws}**")
+    return "\n".join(lines) if lines else "_No linked users._"
+
+
+async def build_leaderboard_embeds(
+    http: httpx.AsyncClient,
+) -> list[discord.Embed]:
+    rows = await fetch_linked_users()
     if not rows:
-        await ctx.send("The leaderboard is empty. Start grinding!")
+        embed = discord.Embed(
+            title="LeetCode leaderboard",
+            description="No one has linked a profile yet. Use `/leetcode set`.",
+            color=discord.Color.dark_blue(),
+        )
+        embed.set_footer(text=LB_FOOTER)
+        return [embed]
+
+    stats = await fetch_stats_for_all(http, rows)
+    ranked = _sort_leaderboard(stats)
+    desc = build_leaderboard_description(ranked)
+    embed = discord.Embed(
+        title="LeetCode leaderboard",
+        description=desc,
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text=LB_FOOTER)
+    return [embed]
+
+
+leetcode_group = app_commands.Group(
+    name="leetcode",
+    description="Link your LeetCode profile for daily leaderboards",
+)
+
+
+@leetcode_group.command(name="set", description="Save your LeetCode username")
+@app_commands.describe(username="Your LeetCode username (as in your profile URL)")
+async def leetcode_set(interaction: discord.Interaction, username: str) -> None:
+    bot = interaction.client
+    if not isinstance(bot, DSABot):
+        return
+    name = _norm_leetcode_username(username)
+    if not name or len(name) > 64:
+        await interaction.response.send_message(
+            "Please provide a valid LeetCode username.",
+            ephemeral=True,
+        )
         return
 
-    description = ""
-    for rank, (user_id, solved) in enumerate(rows, 1):
-        # Fetching the user mention to display in the Discord message
-        description += f"**{rank}.** <@{user_id}> - {solved} questions\n"
+    if not await lc.user_exists(bot.http_lc, name):
+        await interaction.response.send_message(
+            "Could not find that LeetCode user. Check the spelling (case-sensitive).",
+            ephemeral=True,
+        )
+        return
 
-    embed = discord.Embed(title="🏆 DSA Leaderboard", description=description, color=discord.Color.gold())
-    await ctx.send(embed=embed)
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id FROM users WHERE leetcode_username = ? AND user_id != ?",
+            (name, uid),
+        ) as cur:
+            taken = await cur.fetchone()
+        if taken:
+            await interaction.response.send_message(
+                f"That LeetCode account is already linked to <@{taken[0]}>.",
+                ephemeral=True,
+            )
+            return
+        await db.execute(
+            """
+            INSERT INTO users (user_id, leetcode_username) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET leetcode_username = excluded.leetcode_username
+            """,
+            (uid, name),
+        )
+        await db.commit()
 
-# --- MANUAL TEST COMMAND ---
-@bot.command()
-async def testpoll(ctx):
-    # This lets you manually trigger the poll anytime to test it
-    embed = discord.Embed(
-        title="Daily DSA Check-in! 🚀",
-        description="How many questions did you solve today? Be honest!",
-        color=discord.Color.blue()
+    await interaction.response.send_message(
+        f"Linked LeetCode **{name}** to your Discord account.",
+        ephemeral=True,
     )
-    await ctx.send(embed=embed, view=DSAPoll())
 
-# --- BOT EVENTS ---
+
+@leetcode_group.command(name="clear", description="Remove your linked LeetCode username")
+async def leetcode_clear(interaction: discord.Interaction) -> None:
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET leetcode_username = NULL WHERE user_id = ?",
+            (uid,),
+        )
+        await db.commit()
+    await interaction.response.send_message(
+        "Your LeetCode link was removed.",
+        ephemeral=True,
+    )
+
+
+@leetcode_group.command(name="show", description="Show your linked LeetCode username")
+async def leetcode_show(interaction: discord.Interaction) -> None:
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT leetcode_username FROM users WHERE user_id = ?",
+            (uid,),
+        ) as cur:
+            row = await cur.fetchone()
+    lc_name = row[0] if row else None
+    if not lc_name:
+        await interaction.response.send_message(
+            "You have not linked a LeetCode profile. Use `/leetcode set`.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"Your LeetCode username: **{lc_name}**",
+        ephemeral=True,
+    )
+
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+
+class DSABot(commands.Bot):
+    http_lc: httpx.AsyncClient
+
+    def __init__(self) -> None:
+        super().__init__(command_prefix="!", intents=intents)
+        self.http_lc = httpx.AsyncClient(timeout=30.0)
+
+    async def setup_hook(self) -> None:
+        await setup_db()
+        self.tree.add_command(leetcode_group)
+
+        guild_id = os.getenv("GUILD_ID")
+        if guild_id:
+            await self.tree.sync(guild=discord.Object(id=int(guild_id)))
+        else:
+            await self.tree.sync()
+        if not ist_schedule.is_running():
+            ist_schedule.start()
+
+    async def close(self) -> None:
+        await self.http_lc.aclose()
+        await super().close()
+
+
+bot = DSABot()
+
+
+@bot.tree.command(name="leaderboard", description="Show LeetCode today / 7-day stats leaderboard")
+async def slash_leaderboard(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(thinking=True)
+    embeds = await build_leaderboard_embeds(bot.http_lc)
+    await interaction.followup.send(embeds=embeds)
+
+
+@tasks.loop(time=SCHEDULE_TIMES)
+async def ist_schedule() -> None:
+    channel = bot.get_channel(MAIN_CHANNEL_ID)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    now = datetime.datetime.now(IST)
+    hour = now.hour
+
+    if hour == 6:
+        embed = discord.Embed(
+            title=MORNING_TITLE,
+            description=MORNING_BODY,
+            color=discord.Color.green(),
+        )
+        await channel.send(embed=embed)
+        return
+
+    if hour in (12, 18, 22):
+        remind = discord.Embed(
+            title=REMINDER_TITLE,
+            description=REMINDER_BODY,
+            color=discord.Color.blue(),
+        )
+        await channel.send(embed=remind)
+        embeds = await build_leaderboard_embeds(bot.http_lc)
+        await channel.send(embeds=embeds)
+        return
+
+    if hour == 0:
+        embed = discord.Embed(
+            title=GOODNIGHT_TITLE,
+            description=GOODNIGHT_BODY,
+            color=discord.Color.dark_purple(),
+        )
+        await channel.send(embed=embed)
+        return
+
+
+@ist_schedule.before_loop
+async def before_ist_schedule() -> None:
+    await bot.wait_until_ready()
+
+
+@bot.command(name="leaderboard")
+async def prefix_leaderboard(ctx: commands.Context) -> None:
+    embeds = await build_leaderboard_embeds(bot.http_lc)
+    await ctx.send(embeds=embeds)
+
+
+@bot.command(name="testschedule")
+async def testschedule(ctx: commands.Context) -> None:
+    if not ADMIN_IDS or ctx.author.id not in ADMIN_IDS:
+        await ctx.send("You do not have permission to use this command.")
+        return
+    channel = ctx.channel
+    if not isinstance(channel, discord.TextChannel):
+        return
+    remind = discord.Embed(
+        title=REMINDER_TITLE,
+        description=REMINDER_BODY + "\n\n_(test run)_",
+        color=discord.Color.blue(),
+    )
+    await channel.send(embed=remind)
+    embeds = await build_leaderboard_embeds(bot.http_lc)
+    await channel.send(embeds=embeds)
+
+
 @bot.event
-async def on_ready():
-    await setup_db()
-    # Add the view to the bot so buttons persist through bot restarts
-    bot.add_view(DSAPoll())
-    daily_reminder.start()
-    print(f'Logged in as {bot.user}!')
+async def on_ready() -> None:
+    print(f"Logged in as {bot.user} ({bot.user.id if bot.user else '?'})")
 
-# Run the bot
-bot.run(BOT_ID)
+
+def main() -> None:
+    if not BOT_TOKEN:
+        raise SystemExit("Missing BOT_ID (Discord bot token) in environment.")
+    bot.run(BOT_TOKEN)
+
+
+if __name__ == "__main__":
+    main()
