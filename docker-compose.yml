@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    container_name: dsa_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    # We map the local directory so the SQLite DB persists.
+    # Alternatively, you can use a volume:
+    # volumes:
+    #   - bot_data:/app
+    volumes:
+      - .:/app
+
+# volumes:
+#   bot_data:
