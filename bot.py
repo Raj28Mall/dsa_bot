@@ -432,27 +432,24 @@ async def ist_schedule() -> None:
             color=discord.Color.green(),
         )
         await channel.send(embed=embed)
-        return
-
-    if hour in (12, 18, 22):
-        remind = discord.Embed(
+    elif hour in (12, 18, 22):
+        embed = discord.Embed(
             title=REMINDER_TITLE,
             description=REMINDER_BODY,
             color=discord.Color.blue(),
         )
-        await channel.send(embed=remind)
-        embeds = await build_leaderboard_embeds(bot.http_lc)
-        await channel.send(embeds=embeds)
-        return
-
-    if hour == 0:
+        await channel.send(embed=embed)
+    elif hour == 0:
         embed = discord.Embed(
             title=GOODNIGHT_TITLE,
             description=GOODNIGHT_BODY,
             color=discord.Color.dark_purple(),
         )
         await channel.send(embed=embed)
-        return
+
+    # Always send the leaderboard after any scheduled message
+    embeds = await build_leaderboard_embeds(bot.http_lc)
+    await channel.send(embeds=embeds)
 
 
 @ist_schedule.before_loop
