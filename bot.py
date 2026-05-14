@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 import leetcode_graphql as lc
+import codeforces_api as cf
 
 load_dotenv()
 
@@ -76,6 +77,8 @@ async def setup_db() -> None:
             cols = [row[1] for row in await cur.fetchall()]
         if cols and "leetcode_username" not in cols:
             await db.execute("ALTER TABLE users ADD COLUMN leetcode_username TEXT")
+        if cols and "codeforces_handle" not in cols:
+            await db.execute("ALTER TABLE users ADD COLUMN codeforces_handle TEXT")
         if cols and "solved" in cols:
             try:
                 await db.execute("ALTER TABLE users DROP COLUMN solved")
@@ -85,53 +88,73 @@ async def setup_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_leetcode_username "
             "ON users(leetcode_username) WHERE leetcode_username IS NOT NULL"
         )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_codeforces_handle "
+            "ON users(codeforces_handle) WHERE codeforces_handle IS NOT NULL"
+        )
         await db.commit()
 
 
-async def fetch_linked_users() -> list[tuple[int, str]]:
+async def fetch_linked_users() -> list[tuple[int, str | None, str | None]]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT user_id, leetcode_username FROM users "
-            "WHERE leetcode_username IS NOT NULL AND leetcode_username != ''"
+            "SELECT user_id, leetcode_username, codeforces_handle FROM users "
+            "WHERE (leetcode_username IS NOT NULL AND leetcode_username != '') "
+            "   OR (codeforces_handle IS NOT NULL AND codeforces_handle != '')"
         ) as cur:
-            return [(int(r[0]), str(r[1])) for r in await cur.fetchall()]
+            return [(int(r[0]), r[1] if r[1] else None, r[2] if r[2] else None) for r in await cur.fetchall()]
 
 
 async def fetch_stats_for_all(
     http: httpx.AsyncClient,
-    rows: list[tuple[int, str]],
-) -> list[tuple[int, str, int | None, int | None]]:
+    rows: list[tuple[int, str | None, str | None]],
+) -> list[tuple[int, int | None, int | None]]:
     sem = asyncio.Semaphore(4)
 
-    async def one(uid: int, lc_name: str) -> tuple[int, str, int | None, int | None]:
+    async def one(uid: int, lc_name: str | None, cf_name: str | None) -> tuple[int, int | None, int | None]:
         async with sem:
-            t, w = await lc.fetch_stats_today_and_week(http, lc_name)
-            return uid, lc_name, t, w
+            lc_t, lc_w = None, None
+            cf_t, cf_w = None, None
+            
+            if lc_name:
+                lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
+            if cf_name:
+                cf_t, cf_w = await cf.fetch_stats_today_and_week(http, cf_name)
+            
+            t = (lc_t or 0) + (cf_t or 0)
+            w = (lc_w or 0) + (cf_w or 0)
+            
+            if lc_t is None and cf_t is None:
+                t = None
+            if lc_w is None and cf_w is None:
+                w = None
 
-    return list(await asyncio.gather(*[one(u, n) for u, n in rows]))
+            return uid, t, w
+
+    return list(await asyncio.gather(*[one(u, l, c) for u, l, c in rows]))
 
 
 def _sort_leaderboard(
-    stats: list[tuple[int, str, int | None, int | None]],
-) -> list[tuple[int, str, int | None, int | None]]:
-    def key(r: tuple[int, str, int | None, int | None]) -> tuple[int, int]:
-        _, _, t, w = r
+    stats: list[tuple[int, int | None, int | None]],
+) -> list[tuple[int, int | None, int | None]]:
+    def key(r: tuple[int, int | None, int | None]) -> tuple[int, int]:
+        _, t, w = r
         return (
-            -(t if t is not None else -1),
             -(w if w is not None else -1),
+            -(t if t is not None else -1),
         )
 
     return sorted(stats, key=key)
 
 
 def build_leaderboard_description(
-    ranked: list[tuple[int, str, int | None, int | None]],
+    ranked: list[tuple[int, int | None, int | None]],
 ) -> str:
     lines: list[str] = []
-    for i, (uid, _lc, t, w) in enumerate(ranked, 1):
+    for i, (uid, t, w) in enumerate(ranked, 1):
         ts = str(t) if t is not None else "—"
         ws = str(w) if w is not None else "—"
-        lines.append(f"**{i}.** <@{uid}> — today: **{ts}** | last 7d: **{ws}**")
+        lines.append(f"**{i}.** <@{uid}> — this week: **{ws}** | today: **{ts}**")
     return "\n".join(lines) if lines else "_No linked users._"
 
 
@@ -141,8 +164,8 @@ async def build_leaderboard_embeds(
     rows = await fetch_linked_users()
     if not rows:
         embed = discord.Embed(
-            title="LeetCode leaderboard",
-            description="No one has linked a profile yet. Use `/leetcode set`.",
+            title="DSA Leaderboard",
+            description="No one has linked a profile yet. Use `/leetcode set` or `/codeforces set`.",
             color=discord.Color.dark_blue(),
         )
         embed.set_footer(text=LB_FOOTER)
@@ -152,7 +175,7 @@ async def build_leaderboard_embeds(
     ranked = _sort_leaderboard(stats)
     desc = build_leaderboard_description(ranked)
     embed = discord.Embed(
-        title="LeetCode leaderboard",
+        title="DSA Leaderboard",
         description=desc,
         color=discord.Color.gold(),
     )
@@ -252,6 +275,98 @@ async def leetcode_show(interaction: discord.Interaction) -> None:
     )
 
 
+codeforces_group = app_commands.Group(
+    name="codeforces",
+    description="Link your Codeforces profile for daily leaderboards",
+)
+
+
+@codeforces_group.command(name="set", description="Save your Codeforces handle")
+@app_commands.describe(handle="Your Codeforces handle")
+async def codeforces_set(interaction: discord.Interaction, handle: str) -> None:
+    bot = interaction.client
+    if not isinstance(bot, DSABot):
+        return
+    name = _norm_leetcode_username(handle)
+    if not name or len(name) > 64:
+        await interaction.response.send_message(
+            "Please provide a valid Codeforces handle.",
+            ephemeral=True,
+        )
+        return
+
+    if not await cf.user_exists(bot.http_lc, name):
+        await interaction.response.send_message(
+            "Could not find that Codeforces user. Check the spelling (case-sensitive).",
+            ephemeral=True,
+        )
+        return
+
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id FROM users WHERE codeforces_handle = ? AND user_id != ?",
+            (name, uid),
+        ) as cur:
+            taken = await cur.fetchone()
+        if taken:
+            await interaction.response.send_message(
+                f"That Codeforces account is already linked to <@{taken[0]}>.",
+                ephemeral=True,
+            )
+            return
+        await db.execute(
+            """
+            INSERT INTO users (user_id, codeforces_handle) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET codeforces_handle = excluded.codeforces_handle
+            """,
+            (uid, name),
+        )
+        await db.commit()
+
+    await interaction.response.send_message(
+        f"Linked Codeforces **{name}** to your Discord account.",
+        ephemeral=True,
+    )
+
+
+@codeforces_group.command(name="clear", description="Remove your linked Codeforces handle")
+async def codeforces_clear(interaction: discord.Interaction) -> None:
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET codeforces_handle = NULL WHERE user_id = ?",
+            (uid,),
+        )
+        await db.commit()
+    await interaction.response.send_message(
+        "Your Codeforces link was removed.",
+        ephemeral=True,
+    )
+
+
+@codeforces_group.command(name="show", description="Show your linked Codeforces handle")
+async def codeforces_show(interaction: discord.Interaction) -> None:
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT codeforces_handle FROM users WHERE user_id = ?",
+            (uid,),
+        ) as cur:
+            row = await cur.fetchone()
+    cf_name = row[0] if row else None
+    if not cf_name:
+        await interaction.response.send_message(
+            "You have not linked a Codeforces profile. Use `/codeforces set`.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"Your Codeforces handle: **{cf_name}**",
+        ephemeral=True,
+    )
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -266,6 +381,7 @@ class DSABot(commands.Bot):
     async def setup_hook(self) -> None:
         await setup_db()
         self.tree.add_command(leetcode_group)
+        self.tree.add_command(codeforces_group)
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
@@ -293,7 +409,7 @@ async def restrict_slash_commands(interaction: discord.Interaction) -> bool:
     return interaction.channel_id == MAIN_CHANNEL_ID
 
 
-@bot.tree.command(name="leaderboard", description="Show LeetCode today / 7-day stats leaderboard")
+@bot.tree.command(name="leaderboard", description="Show DSA today / 7-day stats leaderboard")
 async def slash_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.response.defer(thinking=True)
     embeds = await build_leaderboard_embeds(bot.http_lc)
