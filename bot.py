@@ -28,7 +28,10 @@ REMINDER_BODY = "How is practice going? Keep the streak alive — solve somethin
 GOODNIGHT_TITLE = "Good night"
 GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
 
-LB_FOOTER = "Daily counts follow LeetCode's calendar (UTC days)."
+LB_FOOTER = (
+    "Counts are accepted (AC) submissions per UTC day, from LeetCode’s recent AC list "
+    f"(up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
+)
 
 SCHEDULE_TIMES = [
     datetime.time(6, 0, tzinfo=IST),

@@ -23,6 +23,18 @@ query UserProfileCalendar($username: String!, $year: Int!) {
 }
 """
 
+# submissionCalendar counts every run (WA/TLE/etc.). Leaderboards use recent AC only.
+AC_STATS_FOR_LEADERBOARD_QUERY = """
+query AcStatsLeaderboard($username: String!, $limit: Int!) {
+  matchedUser(username: $username) {
+    username
+  }
+  recentAcSubmissionList(username: $username, limit: $limit) {
+    timestamp
+  }
+}
+"""
+
 
 def _utc_midnight_ts_for_date(d: datetime.date) -> str:
     dt = datetime.datetime.combine(d, datetime.time.min, tzinfo=UTC)
@@ -36,30 +48,6 @@ def utc_today_calendar_key() -> str:
 def utc_day_keys_last_7_including_today() -> list[str]:
     today = datetime.datetime.now(UTC).date()
     return [_utc_midnight_ts_for_date(today - datetime.timedelta(days=i)) for i in range(7)]
-
-
-def years_covering_keys(keys: list[str]) -> set[int]:
-    years: set[int] = set()
-    for k in keys:
-        try:
-            ts = int(k)
-        except (TypeError, ValueError):
-            continue
-        years.add(datetime.datetime.fromtimestamp(ts, tz=UTC).year)
-    return years if years else {datetime.datetime.now(UTC).year}
-
-
-def parse_submission_calendar(raw: str | None) -> dict[str, int]:
-    if not raw or raw == "{}":
-        return {}
-    data = json.loads(raw)
-    out: dict[str, int] = {}
-    for k, v in data.items():
-        try:
-            out[str(k)] = int(v)
-        except (TypeError, ValueError):
-            continue
-    return out
 
 
 async def graphql_request(
@@ -86,55 +74,6 @@ async def graphql_request(
     return body.get("data")
 
 
-async def fetch_calendar_for_year(
-    client: httpx.AsyncClient,
-    username: str,
-    year: int,
-) -> dict[str, int] | None:
-    data = await graphql_request(
-        client,
-        USER_PROFILE_CALENDAR_QUERY,
-        {"username": username, "year": year},
-    )
-    if not data or not data.get("matchedUser"):
-        return None
-    uc = data["matchedUser"].get("userCalendar") or {}
-    raw = uc.get("submissionCalendar")
-    if raw is None:
-        return {}
-    if isinstance(raw, dict):
-        out: dict[str, int] = {}
-        for k, v in raw.items():
-            try:
-                out[str(k)] = int(v)
-            except (TypeError, ValueError):
-                pass
-        return out
-    if isinstance(raw, str):
-        return parse_submission_calendar(raw)
-    return {}
-
-
-async def fetch_merged_calendar_for_years(
-    client: httpx.AsyncClient,
-    username: str,
-    years: set[int],
-) -> dict[str, int] | None:
-    merged: dict[str, int] = {}
-    saw_valid_user = False
-    for y in sorted(years):
-        cal = await fetch_calendar_for_year(client, username, y)
-        if cal is None:
-            if not saw_valid_user:
-                return None
-            continue
-        saw_valid_user = True
-        merged.update(cal)
-    if not saw_valid_user:
-        return None
-    return merged
-
-
 async def user_exists(client: httpx.AsyncClient, username: str) -> bool:
     y = datetime.datetime.now(UTC).year
     data = await graphql_request(
@@ -145,20 +84,57 @@ async def user_exists(client: httpx.AsyncClient, username: str) -> bool:
     return bool(data and data.get("matchedUser"))
 
 
+# Large enough for very active weekly AC volume; API has no pagination on this list.
+RECENT_AC_FETCH_LIMIT = 1000
+
+
+def _count_ac_in_utc_day_keys(timestamps: list[int], day_keys: set[str]) -> dict[str, int]:
+    counts = {k: 0 for k in day_keys}
+    for ts in timestamps:
+        day = datetime.datetime.fromtimestamp(ts, tz=UTC).date()
+        k = _utc_midnight_ts_for_date(day)
+        if k in day_keys:
+            counts[k] += 1
+    return counts
+
+
 async def fetch_stats_today_and_week(
     client: httpx.AsyncClient,
     username: str,
 ) -> tuple[int | None, int | None]:
     """
-    Returns (today_submissions, last_7_utc_days_submissions_sum) using LeetCode calendar (UTC days).
+    Returns (today_ac_count, last_7_utc_days_ac_sum) from recent AC submissions (UTC days).
     None means fetch/parse failure or unknown user.
+
+    Uses recentAcSubmissionList (accepted only). Counts can be capped if a user exceeds
+    RECENT_AC_FETCH_LIMIT recent AC submissions returned by the API for the window.
     """
-    week_keys = utc_day_keys_last_7_including_today()
+    week_keys_list = utc_day_keys_last_7_including_today()
     today_key = utc_today_calendar_key()
-    years = years_covering_keys(week_keys + [today_key])
-    cal = await fetch_merged_calendar_for_years(client, username, years)
-    if cal is None:
+    day_keys = set(week_keys_list)
+
+    data = await graphql_request(
+        client,
+        AC_STATS_FOR_LEADERBOARD_QUERY,
+        {"username": username, "limit": RECENT_AC_FETCH_LIMIT},
+    )
+    if not data:
         return None, None
-    today_count = cal.get(today_key, 0)
-    week_sum = sum(cal.get(k, 0) for k in week_keys)
+    if not data.get("matchedUser"):
+        return None, None
+    rows = data.get("recentAcSubmissionList")
+    if rows is None:
+        return None, None
+
+    timestamps: list[int] = []
+    for row in rows:
+        ts = row.get("timestamp")
+        try:
+            timestamps.append(int(ts))
+        except (TypeError, ValueError):
+            continue
+
+    counts = _count_ac_in_utc_day_keys(timestamps, day_keys)
+    today_count = counts.get(today_key, 0)
+    week_sum = sum(counts.get(k, 0) for k in week_keys_list)
     return today_count, week_sum
