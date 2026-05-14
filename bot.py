@@ -283,6 +283,16 @@ class DSABot(commands.Bot):
 bot = DSABot()
 
 
+@bot.check
+async def restrict_prefix_commands(ctx: commands.Context) -> bool:
+    return ctx.channel.id == MAIN_CHANNEL_ID
+
+
+@bot.tree.interaction_check
+async def restrict_slash_commands(interaction: discord.Interaction) -> bool:
+    return interaction.channel_id == MAIN_CHANNEL_ID
+
+
 @bot.tree.command(name="leaderboard", description="Show LeetCode today / 7-day stats leaderboard")
 async def slash_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.response.defer(thinking=True)
