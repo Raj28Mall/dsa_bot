@@ -177,7 +177,7 @@ async def build_leaderboard_embeds(
     if not rows:
         embed = discord.Embed(
             title="DSA Leaderboard",
-            description="No one has linked a profile yet. Use `/leetcode set` or `/codeforces set`.",
+            description="No one has linked a profile yet. Use `/leetcode set`, `/codeforces set`, or `/geeksforgeeks set`.",
             color=discord.Color.dark_blue(),
         )
         embed.set_footer(text=LB_FOOTER)
@@ -381,12 +381,12 @@ async def codeforces_show(interaction: discord.Interaction) -> None:
 
 geeksforgeeks_group = app_commands.Group(
     name="geeksforgeeks",
-    description="Link your GeeksForGeeks profile for daily leaderboards",
+    description="Link your GeeksforGeeks profile for daily leaderboards",
 )
 
 
-@geeksforgeeks_group.command(name="set", description="Save your GeeksForGeeks handle")
-@app_commands.describe(handle="Your GeeksForGeeks handle")
+@geeksforgeeks_group.command(name="set", description="Save your GeeksforGeeks handle")
+@app_commands.describe(handle="Your GeeksforGeeks handle")
 async def geeksforgeeks_set(interaction: discord.Interaction, handle: str) -> None:
     bot = interaction.client
     if not isinstance(bot, DSABot):
@@ -394,14 +394,14 @@ async def geeksforgeeks_set(interaction: discord.Interaction, handle: str) -> No
     name = _norm_leetcode_username(handle)
     if not name or len(name) > 64:
         await interaction.response.send_message(
-            "Please provide a valid GeeksForGeeks handle.",
+            "Please provide a valid GeeksforGeeks handle.",
             ephemeral=True,
         )
         return
 
     if not await gfg.user_exists(bot.http_lc, name):
         await interaction.response.send_message(
-            "Could not find that GeeksForGeeks user. Check the spelling.",
+            "Could not find that GeeksforGeeks user. Check the spelling.",
             ephemeral=True,
         )
         return
@@ -415,7 +415,7 @@ async def geeksforgeeks_set(interaction: discord.Interaction, handle: str) -> No
             taken = await cur.fetchone()
         if taken:
             await interaction.response.send_message(
-                f"That GeeksForGeeks account is already linked to <@{taken[0]}>.",
+                f"That GeeksforGeeks account is already linked to <@{taken[0]}>.",
                 ephemeral=True,
             )
             return
@@ -429,12 +429,12 @@ async def geeksforgeeks_set(interaction: discord.Interaction, handle: str) -> No
         await db.commit()
 
     await interaction.response.send_message(
-        f"Linked GeeksForGeeks **{name}** to your Discord account.",
+        f"Linked GeeksforGeeks **{name}** to your Discord account.",
         ephemeral=True,
     )
 
 
-@geeksforgeeks_group.command(name="clear", description="Remove your linked GeeksForGeeks handle")
+@geeksforgeeks_group.command(name="clear", description="Remove your linked GeeksforGeeks handle")
 async def geeksforgeeks_clear(interaction: discord.Interaction) -> None:
     uid = interaction.user.id
     async with aiosqlite.connect(DB_PATH) as db:
@@ -444,12 +444,12 @@ async def geeksforgeeks_clear(interaction: discord.Interaction) -> None:
         )
         await db.commit()
     await interaction.response.send_message(
-        "Your GeeksForGeeks link was removed.",
+        "Your GeeksforGeeks link was removed.",
         ephemeral=True,
     )
 
 
-@geeksforgeeks_group.command(name="show", description="Show your linked GeeksForGeeks handle")
+@geeksforgeeks_group.command(name="show", description="Show your linked GeeksforGeeks handle")
 async def geeksforgeeks_show(interaction: discord.Interaction) -> None:
     uid = interaction.user.id
     async with aiosqlite.connect(DB_PATH) as db:
@@ -461,12 +461,12 @@ async def geeksforgeeks_show(interaction: discord.Interaction) -> None:
     gfg_name = row[0] if row else None
     if not gfg_name:
         await interaction.response.send_message(
-            "You have not linked a GeeksForGeeks profile. Use `/geeksforgeeks set`.",
+            "You have not linked a GeeksforGeeks profile. Use `/geeksforgeeks set`.",
             ephemeral=True,
         )
         return
     await interaction.response.send_message(
-        f"Your GeeksForGeeks handle: **{gfg_name}**",
+        f"Your GeeksforGeeks handle: **{gfg_name}**",
         ephemeral=True,
     )
 
