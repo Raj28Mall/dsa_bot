@@ -1,19 +1,20 @@
 # DSA Tracker Discord Bot
 
-A Discord bot for a small group that links each member’s **LeetCode** profile, pulls submission stats from LeetCode’s GraphQL API (same pattern as [alfa-leetcode-api](https://github.com/alfaarghya/alfa-leetcode-api)), and posts **IST**-scheduled reminders with **today** and **last 7 UTC calendar days** leaderboards.
+A Discord bot for a small group that links each member's **LeetCode**, **Codeforces**, and **GeeksforGeeks** profiles, pulls submission stats from their respective APIs, and posts **IST**-scheduled reminders with **today** and **last 7 UTC calendar days** leaderboards.
 
 ## Features
 
-- **LeetCode linking**: Slash group `/leetcode` — `set`, `clear`, and `show` (validated against LeetCode before saving).
-- **SQLite**: Stores Discord `user_id` → `leetcode_username` with a unique constraint per LeetCode account.
+- **Multi-platform linking**: Slash command groups for `/leetcode`, `/codeforces`, and `/geeksforgeeks` — each with `set`, `clear`, and `show` subcommands (validated against respective platforms before saving).
+- **SQLite**: Stores Discord `user_id` → platform handles with unique constraints per platform account.
 - **Scheduled messages (Asia/Kolkata)**:
-  - **06:00** — Morning message (no leaderboard).
+  - **06:00** — Morning message with leaderboard.
   - **12:00, 18:00, 22:00** — Reminder plus leaderboard embed(s).
-  - **00:00** — Goodnight message (no leaderboard).
+  - **00:00** — Goodnight message with leaderboard.
 - **`/leaderboard`** and **`!leaderboard`**: On-demand leaderboard (same data as reminders).
 - **`!testschedule`**: Admin-only; posts a reminder + leaderboard in the current channel (set `ADMIN_USER_IDS` in `.env`).
 
-Leaderboard **footer** explains that daily counts follow **LeetCode’s activity calendar (UTC days)**, not IST calendar days.
+Leaderboard **footer** explains that daily counts are aggregated per **UTC calendar day** across all linked platforms (LeetCode, Codeforces, and GeeksforGeeks).
+
 
 ## Prerequisites
 
@@ -64,9 +65,20 @@ Docker: `docker compose up --build` (same env file; SQLite persists via the moun
 
 ## Commands
 
+### Platform Linking
 - `/leetcode set username` — Link your LeetCode username.
-- `/leetcode clear` — Remove your link.
-- `/leetcode show` — Show your linked username.
-- `/leaderboard` — LeetCode today / 7-day stats for all linked members.
+- `/leetcode clear` — Remove your LeetCode link.
+- `/leetcode show` — Show your linked LeetCode username.
+- `/codeforces set handle` — Link your Codeforces handle.
+- `/codeforces clear` — Remove your Codeforces link.
+- `/codeforces show` — Show your linked Codeforces handle.
+- `/geeksforgeeks set handle` — Link your GeeksforGeeks handle.
+- `/geeksforgeeks clear` — Remove your GeeksforGeeks link.
+- `/geeksforgeeks show` — Show your linked GeeksforGeeks handle.
+
+### Leaderboard
+- `/leaderboard` — Show today / 7-day stats for all linked members across all platforms.
 - `!leaderboard` — Same as `/leaderboard`.
+
+### Admin
 - `!testschedule` — Admin-only test of reminder + leaderboard.
