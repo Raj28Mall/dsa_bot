@@ -610,7 +610,8 @@ async def on_ready() -> None:
 def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Missing BOT_ID (Discord bot token) in environment.")
-    bot.run(BOT_TOKEN)
+    # Tell discord.py to handle Python's root logger so our __main__ logs show up too
+    bot.run(BOT_TOKEN, root_logger=True)
 
 
 if __name__ == "__main__":
