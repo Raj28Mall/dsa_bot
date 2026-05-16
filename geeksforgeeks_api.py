@@ -52,7 +52,7 @@ async def fetch_stats_today_and_week(
             data = r.json()
             if "result" not in data:
                 logger.warning(f"GFG JSON fetched for {username}, but 'result' missing.")
-                return 0, 0
+                return None, None
                 
             results = data["result"]
             today = datetime.utcnow().date()
