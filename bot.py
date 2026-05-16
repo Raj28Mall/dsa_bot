@@ -487,12 +487,18 @@ class DSABot(commands.Bot):
         self.tree.add_command(leetcode_group)
         self.tree.add_command(codeforces_group)
         self.tree.add_command(geeksforgeeks_group)
+        
+        print(f"[DEBUG] Registered command groups: {[cmd.name for cmd in self.tree.get_commands()]}")
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
-            await self.tree.sync(guild=discord.Object(id=int(guild_id)))
+            print(f"[DEBUG] Syncing commands to guild: {guild_id}")
+            synced = await self.tree.sync(guild=discord.Object(id=int(guild_id)))
+            print(f"[DEBUG] Synced {len(synced)} commands to guild {guild_id}")
         else:
-            await self.tree.sync()
+            print("[DEBUG] Syncing commands globally")
+            synced = await self.tree.sync()
+            print(f"[DEBUG] Synced {len(synced)} commands globally")
         if not ist_schedule.is_running():
             ist_schedule.start()
 
@@ -519,6 +525,14 @@ async def slash_leaderboard(interaction: discord.Interaction) -> None:
     await interaction.response.defer(thinking=True)
     embeds = await build_leaderboard_embeds(bot.http_lc)
     await interaction.followup.send(embeds=embeds)
+
+
+@bot.tree.command(name="testcommand", description="Test command to verify command sync is working")
+async def test_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "✅ Test command is working! This confirms the bot is syncing commands correctly.",
+        ephemeral=True,
+    )
 
 
 @tasks.loop(time=SCHEDULE_TIMES)
