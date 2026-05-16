@@ -31,8 +31,9 @@ GOODNIGHT_TITLE = "Good night"
 GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
 
 LB_FOOTER = (
-    "Counts are accepted (AC) submissions per UTC day, from LeetCode’s recent AC list "
-    f"(up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
+    "Counts are accepted (AC) submissions per UTC day across linked LeetCode, "
+    "Codeforces, and GeeksforGeeks profiles. "
+    f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
 )
 
 SCHEDULE_TIMES = [
