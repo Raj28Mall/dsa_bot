@@ -494,8 +494,10 @@ class DSABot(commands.Bot):
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            self.tree.copy_global_to(guild=guild)
             log.info(f"Syncing commands to guild: {guild_id}")
-            synced = await self.tree.sync(guild=discord.Object(id=int(guild_id)))
+            synced = await self.tree.sync(guild=guild)
             log.info(f"Synced {len(synced)} commands to guild {guild_id}")
         else:
             log.info("Syncing commands globally")
