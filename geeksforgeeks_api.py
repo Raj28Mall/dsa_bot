@@ -55,7 +55,7 @@ async def fetch_stats_today_and_week(
                 return 0, 0
                 
             results = data["result"]
-            today = datetime.now().date()
+            today = datetime.utcnow().date()
             seven_days_ago = today - timedelta(days=6)
             
             today_solved = 0
