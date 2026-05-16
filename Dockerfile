@@ -1,5 +1,6 @@
 FROM python:3.12-slim
 
+ENV PYTHONUNBUFFERED=1
 # Install uv for fast dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -16,4 +17,4 @@ RUN uv sync
 COPY . .
 
 # Run the bot using uv
-CMD ["uv", "run", "python3", "bot.py"]
+CMD ["uv", "run", "python3", "-u", "bot.py"]

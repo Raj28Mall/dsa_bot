@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import os
 import zoneinfo
-
+import logging
 import aiosqlite
 import discord
 import httpx
@@ -15,6 +15,8 @@ import codeforces_api as cf
 import geeksforgeeks_api as gfg
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 MAIN_CHANNEL_ID = int(os.getenv("MAIN_CHANNEL_ID", "1504071059073405019"))
 BOT_TOKEN = os.getenv("BOT_ID")
@@ -488,17 +490,17 @@ class DSABot(commands.Bot):
         self.tree.add_command(codeforces_group)
         self.tree.add_command(geeksforgeeks_group)
         
-        print(f"[DEBUG] Registered command groups: {[cmd.name for cmd in self.tree.get_commands()]}")
+        log.info(f"Registered command groups: {[cmd.name for cmd in self.tree.get_commands()]}")
 
         guild_id = os.getenv("GUILD_ID")
         if guild_id:
-            print(f"[DEBUG] Syncing commands to guild: {guild_id}")
+            log.info(f"Syncing commands to guild: {guild_id}")
             synced = await self.tree.sync(guild=discord.Object(id=int(guild_id)))
-            print(f"[DEBUG] Synced {len(synced)} commands to guild {guild_id}")
+            log.info(f"Synced {len(synced)} commands to guild {guild_id}")
         else:
-            print("[DEBUG] Syncing commands globally")
+            log.info("Syncing commands globally")
             synced = await self.tree.sync()
-            print(f"[DEBUG] Synced {len(synced)} commands globally")
+            log.info(f"Synced {len(synced)} commands globally")
         if not ist_schedule.is_running():
             ist_schedule.start()
 
@@ -602,7 +604,7 @@ async def testschedule(ctx: commands.Context) -> None:
 
 @bot.event
 async def on_ready() -> None:
-    print(f"Logged in as {bot.user} ({bot.user.id if bot.user else '?'})")
+    log.info(f"Logged in as {bot.user} ({bot.user.id if bot.user else '?'})")
 
 
 def main() -> None:
