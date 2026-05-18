@@ -151,7 +151,12 @@ async def fetch_stats_for_all(
         log.info(f"Entering process_platform for user_id={uid}, platform={platform}, handle={handle}")
         try:
             total_ac = await fetch_func(http, handle)
-            log.info(f"Total AC fetched for {handle} on {platform}: {total_ac}")
+            
+            # DIVIDE BY 2 FOR LEETCODE RIGHT HERE, EXACTLY BEFORE THE DATABASE UPSERT
+            if platform == 'lc' and total_ac is not None:
+                total_ac = total_ac // 2
+                
+            log.info(f"Total AC fetched (and adjusted) for {handle} on {platform}: {total_ac}")
             if total_ac is None:
                  log.warning(f"Could not fetch total_ac for {handle} on {platform}. Defaulting to 0, 0")
                  return 0, 0

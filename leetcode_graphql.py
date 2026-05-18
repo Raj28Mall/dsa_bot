@@ -77,12 +77,10 @@ async def fetch_total_ac(
     if not stats:
         return None
         
-    for item in stats:
-        if item.get("difficulty") == "All":
-            return item.get("count", 0)
-            
-    # Fallback just in case
-    return stats[0].get("count", 0) if stats else 0
+    # We will sum them up exactly as before (which doubles the result) 
+    # so we can divide by 2 in the main bot loop as you requested.
+    total_ac = sum(item.get("count", 0) for item in stats)
+    return total_ac
 
 
 async def fetch_stats_today_and_week(
