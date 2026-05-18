@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import httpx
 import json
+import logging
 
-from leetcode_graphql import (
-    utc_day_keys_last_7_including_today,
-    utc_today_calendar_key,
-    _count_ac_in_utc_day_keys,
-)
-
+logger = logging.getLogger(__name__)
 
 async def user_exists(client: httpx.AsyncClient, handle: str) -> bool:
     try:
@@ -23,41 +19,20 @@ async def user_exists(client: httpx.AsyncClient, handle: str) -> bool:
     except (httpx.HTTPError, json.JSONDecodeError):
         return False
 
-
-async def fetch_stats_today_and_week(
-    client: httpx.AsyncClient,
-    handle: str,
-) -> tuple[int | None, int | None]:
+async def fetch_total_ac(client: httpx.AsyncClient, handle: str) -> int | None:
+    url = f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=10000"
     try:
-        r = await client.get(
-            f"https://codeforces.com/api/user.status?handle={handle}&from=1&count=500",
-            timeout=30.0,
-        )
-        r.raise_for_status()
-        data = r.json()
-    except (httpx.HTTPError, json.JSONDecodeError):
-        return None, None
-
-    if data.get("status") != "OK":
-        return None, None
-
-    submissions = data.get("result", [])
-    timestamps: list[int] = []
-    
-    for row in submissions:
-        if row.get("verdict") == "OK":
-            ts = row.get("creationTimeSeconds")
-            if ts is not None:
-                try:
-                    timestamps.append(int(ts))
-                except (TypeError, ValueError):
-                    continue
-
-    week_keys_list = utc_day_keys_last_7_including_today()
-    today_key = utc_today_calendar_key()
-    day_keys = set(week_keys_list)
-
-    counts = _count_ac_in_utc_day_keys(timestamps, day_keys)
-    today_count = counts.get(today_key, 0)
-    week_sum = sum(counts.get(k, 0) for k in week_keys_list)
-    return today_count, week_sum
+        response = await client.get(url, timeout=30.0)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") == "OK":
+            submissions = data.get("result", [])
+            ac_count = sum(1 for sub in submissions if sub.get("verdict") == "OK")
+            return ac_count
+        else:
+            logger.error(f"Codeforces API returned error for {handle}: {data.get('comment')}")
+            return None
+    except Exception as e:
+        logger.error(f"Failed to fetch Codeforces stats for {handle}: {e}")
+        return None

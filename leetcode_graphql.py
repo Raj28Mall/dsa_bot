@@ -3,52 +3,23 @@
 from __future__ import annotations
 
 import json
-import datetime
-from datetime import timezone
 from typing import Any
 
 import httpx
 
-UTC = timezone.utc
-
 LEETCODE_GRAPHQL_URL = "https://leetcode.com/graphql"
 
-USER_PROFILE_CALENDAR_QUERY = """
-query UserProfileCalendar($username: String!, $year: Int!) {
-  matchedUser(username: $username) {
-    userCalendar(year: $year) {
-      submissionCalendar
+GET_USER_STATS_QUERY = """
+query getUserStats($username: String!) {
+    matchedUser(username: $username) {
+        submitStats {
+            acSubmissionNum {
+                count
+            }
+        }
     }
-  }
 }
 """
-
-# submissionCalendar counts every run (WA/TLE/etc.). Leaderboards use recent AC only.
-AC_STATS_FOR_LEADERBOARD_QUERY = """
-query AcStatsLeaderboard($username: String!, $limit: Int!) {
-  matchedUser(username: $username) {
-    username
-  }
-  recentAcSubmissionList(username: $username, limit: $limit) {
-    timestamp
-  }
-}
-"""
-
-
-def _utc_midnight_ts_for_date(d: datetime.date) -> str:
-    dt = datetime.datetime.combine(d, datetime.time.min, tzinfo=UTC)
-    return str(int(dt.timestamp()))
-
-
-def utc_today_calendar_key() -> str:
-    return _utc_midnight_ts_for_date(datetime.datetime.now(UTC).date())
-
-
-def utc_day_keys_last_7_including_today() -> list[str]:
-    today = datetime.datetime.now(UTC).date()
-    return [_utc_midnight_ts_for_date(today - datetime.timedelta(days=i)) for i in range(7)]
-
 
 async def graphql_request(
     client: httpx.AsyncClient,
@@ -73,29 +44,40 @@ async def graphql_request(
         return None
     return body.get("data")
 
-
 async def user_exists(client: httpx.AsyncClient, username: str) -> bool:
-    y = datetime.datetime.now(UTC).year
     data = await graphql_request(
         client,
-        USER_PROFILE_CALENDAR_QUERY,
-        {"username": username, "year": y},
+        GET_USER_STATS_QUERY,
+        {"username": username},
     )
     return bool(data and data.get("matchedUser"))
 
-
-# Large enough for very active weekly AC volume; API has no pagination on this list.
-RECENT_AC_FETCH_LIMIT = 1000
-
-
-def _count_ac_in_utc_day_keys(timestamps: list[int], day_keys: set[str]) -> dict[str, int]:
-    counts = {k: 0 for k in day_keys}
-    for ts in timestamps:
-        day = datetime.datetime.fromtimestamp(ts, tz=UTC).date()
-        k = _utc_midnight_ts_for_date(day)
-        if k in day_keys:
-            counts[k] += 1
-    return counts
+async def fetch_total_ac(
+    client: httpx.AsyncClient,
+    username: str,
+) -> int | None:
+    """
+    Returns the sum of the total accepted submissions counts.
+    None means fetch/parse failure or unknown user.
+    """
+    data = await graphql_request(
+        client,
+        GET_USER_STATS_QUERY,
+        {"username": username},
+    )
+    if not data:
+        return None
+    
+    matched_user = data.get("matchedUser")
+    if not matched_user:
+        return None
+        
+    stats = matched_user.get("submitStats", {}).get("acSubmissionNum", [])
+    if not stats:
+        return None
+        
+    total_ac = sum(item.get("count", 0) for item in stats)
+    return total_ac
 
 
 async def fetch_stats_today_and_week(

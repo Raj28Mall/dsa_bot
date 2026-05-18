@@ -33,9 +33,8 @@ GOODNIGHT_TITLE = "Good night"
 GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
 
 LB_FOOTER = (
-    "Counts are accepted (AC) submissions per UTC day across linked LeetCode, "
-    "Codeforces, and GeeksforGeeks profiles. "
-    f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
+    "Counts are based on all-time cumulative AC submissions. "
+    "Daily differences determine your activity."
 )
 
 SCHEDULE_TIMES = [
@@ -102,6 +101,17 @@ async def setup_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_geeksforgeeks_handle "
             "ON users(geeksforgeeks_handle) WHERE geeksforgeeks_handle IS NOT NULL"
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_daily_totals (
+                user_id INTEGER,
+                platform TEXT,
+                utc_date TEXT,
+                total_ac INTEGER,
+                PRIMARY KEY (user_id, platform, utc_date)
+            )
+            """
+        )
         await db.commit()
 
 
@@ -120,30 +130,69 @@ async def fetch_stats_for_all(
     http: httpx.AsyncClient,
     rows: list[tuple[int, str | None, str | None, str | None]],
 ) -> list[tuple[int, int | None, int | None]]:
+    today_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    yesterday_utc_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+    week_ago_utc_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+    
+    yesterday_str = yesterday_utc_dt.strftime("%Y-%m-%d")
+    week_ago_str = week_ago_utc_dt.strftime("%Y-%m-%d")
+
+    async def process_platform(uid: int, platform: str, handle: str, fetch_func) -> tuple[int, int]:
+        total_ac = await fetch_func(http, handle)
+        if total_ac is None:
+             # Could not fetch, assume 0 for diffing or rather let's skip updating DB if we fail
+             return 0, 0
+            
+        async with aiosqlite.connect(DB_PATH) as db:
+            # Get historical maximums up to target dates to calculate diffs
+            async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, yesterday_str)) as cur:
+                yest = await cur.fetchone()
+                yest_total = yest[0] if yest and yest[0] is not None else total_ac
+                
+            async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, week_ago_str)) as cur:
+                week = await cur.fetchone()
+                week_total = week[0] if week and week[0] is not None else total_ac
+                
+            # Upsert today's
+            await db.execute(
+                """
+                INSERT INTO user_daily_totals (user_id, platform, utc_date, total_ac) 
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, platform, utc_date) DO UPDATE SET total_ac = MAX(total_ac, excluded.total_ac)
+                """, (uid, platform, today_utc, total_ac)
+            )
+            await db.commit()
+            
+        return max(0, total_ac - yest_total), max(0, total_ac - week_total)
+
     sem = asyncio.Semaphore(4)
 
     async def one(uid: int, lc_name: str | None, cf_name: str | None, gfg_name: str | None) -> tuple[int, int | None, int | None]:
         async with sem:
-            lc_t, lc_w = None, None
-            cf_t, cf_w = None, None
-            gfg_t, gfg_w = None, None
+            tot_day = 0
+            tot_week = 0
+            any_active = False
             
             if lc_name:
-                lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
+                d, w = await process_platform(uid, "lc", lc_name, lc.fetch_total_ac)
+                tot_day += d
+                tot_week += w
+                any_active = True
             if cf_name:
-                cf_t, cf_w = await cf.fetch_stats_today_and_week(http, cf_name)
+                d, w = await process_platform(uid, "cf", cf_name, cf.fetch_total_ac)
+                tot_day += d
+                tot_week += w
+                any_active = True
             if gfg_name:
-                gfg_t, gfg_w = await gfg.fetch_stats_today_and_week(http, gfg_name)
+                d, w = await process_platform(uid, "gfg", gfg_name, gfg.fetch_total_ac)
+                tot_day += d
+                tot_week += w
+                any_active = True
             
-            t = (lc_t or 0) + (cf_t or 0) + (gfg_t or 0)
-            w = (lc_w or 0) + (cf_w or 0) + (gfg_w or 0)
-            
-            if lc_t is None and cf_t is None and gfg_t is None:
-                t = None
-            if lc_w is None and cf_w is None and gfg_w is None:
-                w = None
+            if not any_active:
+                return uid, None, None
 
-            return uid, t, w
+            return uid, tot_day, tot_week
 
     return list(await asyncio.gather(*[one(u, l, c, g) for u, l, c, g in rows]))
 
