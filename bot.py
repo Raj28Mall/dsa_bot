@@ -108,10 +108,17 @@ async def setup_db() -> None:
                 platform TEXT,
                 utc_date TEXT,
                 total_ac INTEGER,
+                initial_ac INTEGER,
                 PRIMARY KEY (user_id, platform, utc_date)
             )
             """
         )
+        async with db.execute("PRAGMA table_info(user_daily_totals)") as cur:
+            udt_cols = [row[1] for row in await cur.fetchall()]
+        if udt_cols and "initial_ac" not in udt_cols:
+            await db.execute("ALTER TABLE user_daily_totals ADD COLUMN initial_ac INTEGER")
+            await db.execute("UPDATE user_daily_totals SET initial_ac = total_ac")
+        
         await db.commit()
 
 
@@ -130,12 +137,13 @@ async def fetch_stats_for_all(
     http: httpx.AsyncClient,
     rows: list[tuple[int, str | None, str | None, str | None]],
 ) -> list[tuple[int, int | None, int | None]]:
-    today_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-    yesterday_utc_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
-    week_ago_utc_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+    # Shift IST back by 6 hours so the "day" boundary happens exactly at 6:00 AM IST.
+    now_ist = datetime.datetime.now(IST)
+    logical_dt = now_ist - datetime.timedelta(hours=6)
     
-    yesterday_str = yesterday_utc_dt.strftime("%Y-%m-%d")
-    week_ago_str = week_ago_utc_dt.strftime("%Y-%m-%d")
+    today_str = logical_dt.strftime("%Y-%m-%d")
+    yesterday_str = (logical_dt - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    week_ago_str = (logical_dt - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
 
     async def process_platform(uid: int, platform: str, handle: str, fetch_func) -> tuple[int, int]:
         total_ac = await fetch_func(http, handle)
@@ -144,6 +152,10 @@ async def fetch_stats_for_all(
              return 0, 0
             
         async with aiosqlite.connect(DB_PATH) as db:
+            # Check if this user has any prior history before today
+            async with db.execute("SELECT 1 FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date < ?", (uid, platform, today_str)) as cur:
+                has_history = await cur.fetchone() is not None
+
             # Get historical maximums up to target dates to calculate diffs
             async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, yesterday_str)) as cur:
                 yest = await cur.fetchone()
@@ -153,15 +165,23 @@ async def fetch_stats_for_all(
                 week = await cur.fetchone()
                 week_total = week[0] if week and week[0] is not None else 0
                 
-            # Upsert today's
+            # Upsert today's total into the DB
             await db.execute(
                 """
-                INSERT INTO user_daily_totals (user_id, platform, utc_date, total_ac) 
-                VALUES (?, ?, ?, ?)
+                INSERT INTO user_daily_totals (user_id, platform, utc_date, total_ac, initial_ac) 
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, platform, utc_date) DO UPDATE SET total_ac = MAX(total_ac, excluded.total_ac)
-                """, (uid, platform, today_utc, total_ac)
+                """, (uid, platform, today_str, total_ac, total_ac)
             )
             await db.commit()
+            
+            # Fetch today's initial_ac in case we need it for Day 1
+            async with db.execute("SELECT initial_ac FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date=?", (uid, platform, today_str)) as cur:
+                today_row = await cur.fetchone()
+                today_initial = today_row[0] if today_row and today_row[0] is not None else total_ac
+            
+        if not has_history:
+            return max(0, total_ac - today_initial), max(0, total_ac - today_initial)
             
         return max(0, total_ac - yest_total), max(0, total_ac - week_total)
 
