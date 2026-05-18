@@ -144,46 +144,60 @@ async def fetch_stats_for_all(
     today_str = logical_dt.strftime("%Y-%m-%d")
     yesterday_str = (logical_dt - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     week_ago_str = (logical_dt - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+    
+    log.info(f"fetch_stats_for_all initialized. Dates computed - Today: {today_str}, Yesterday: {yesterday_str}, Week_Ago: {week_ago_str}")
 
     async def process_platform(uid: int, platform: str, handle: str, fetch_func) -> tuple[int, int]:
-        total_ac = await fetch_func(http, handle)
-        if total_ac is None:
-             # Could not fetch, assume 0 for diffing or rather let's skip updating DB if we fail
-             return 0, 0
-            
-        async with aiosqlite.connect(DB_PATH) as db:
-            # Check if this user has any prior history before today
-            async with db.execute("SELECT 1 FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date < ?", (uid, platform, today_str)) as cur:
-                has_history = await cur.fetchone() is not None
+        log.info(f"Entering process_platform for user_id={uid}, platform={platform}, handle={handle}")
+        try:
+            total_ac = await fetch_func(http, handle)
+            log.info(f"Total AC fetched for {handle} on {platform}: {total_ac}")
+            if total_ac is None:
+                 log.warning(f"Could not fetch total_ac for {handle} on {platform}. Defaulting to 0, 0")
+                 return 0, 0
+                
+            async with aiosqlite.connect(DB_PATH) as db:
+                log.info(f"Connected to DB to update stats for {handle} ({platform})")
+                
+                async with db.execute("SELECT 1 FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date < ?", (uid, platform, today_str)) as cur:
+                    has_history = await cur.fetchone() is not None
+                log.info(f"has_history for {handle} on {platform}: {has_history}")
 
-            # Get historical maximums up to target dates to calculate diffs
-            async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, yesterday_str)) as cur:
-                yest = await cur.fetchone()
-                yest_total = yest[0] if yest and yest[0] is not None else 0
+                async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, yesterday_str)) as cur:
+                    yest = await cur.fetchone()
+                    yest_total = yest[0] if yest and yest[0] is not None else 0
+                    
+                async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, week_ago_str)) as cur:
+                    week = await cur.fetchone()
+                    week_total = week[0] if week and week[0] is not None else 0
+                    
+                log.info(f"Historical query check for {handle}: yest_total={yest_total}, week_total={week_total}")
                 
-            async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, week_ago_str)) as cur:
-                week = await cur.fetchone()
-                week_total = week[0] if week and week[0] is not None else 0
+                await db.execute(
+                    """
+                    INSERT INTO user_daily_totals (user_id, platform, utc_date, total_ac, initial_ac) 
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, platform, utc_date) DO UPDATE SET total_ac = MAX(total_ac, excluded.total_ac)
+                    """, (uid, platform, today_str, total_ac, total_ac)
+                )
+                await db.commit()
+                log.info(f"Committed UPSERT for {handle} on {platform}")
                 
-            # Upsert today's total into the DB
-            await db.execute(
-                """
-                INSERT INTO user_daily_totals (user_id, platform, utc_date, total_ac, initial_ac) 
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, platform, utc_date) DO UPDATE SET total_ac = MAX(total_ac, excluded.total_ac)
-                """, (uid, platform, today_str, total_ac, total_ac)
-            )
-            await db.commit()
+                async with db.execute("SELECT initial_ac FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date=?", (uid, platform, today_str)) as cur:
+                    today_row = await cur.fetchone()
+                    today_initial = today_row[0] if today_row and today_row[0] is not None else total_ac
+                log.info(f"Fetched today_initial={today_initial} for {handle}")
+                
+            if not has_history:
+                log.info(f"Returning first-day diff (using today_initial) for {handle}")
+                return max(0, total_ac - today_initial), max(0, total_ac - today_initial)
+                
+            log.info(f"Returning historical diff calculation for {handle}")
+            return max(0, total_ac - yest_total), max(0, total_ac - week_total)
             
-            # Fetch today's initial_ac in case we need it for Day 1
-            async with db.execute("SELECT initial_ac FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date=?", (uid, platform, today_str)) as cur:
-                today_row = await cur.fetchone()
-                today_initial = today_row[0] if today_row and today_row[0] is not None else total_ac
-            
-        if not has_history:
-            return max(0, total_ac - today_initial), max(0, total_ac - today_initial)
-            
-        return max(0, total_ac - yest_total), max(0, total_ac - week_total)
+        except Exception as e:
+            log.exception(f"Exception in process_platform for {handle} on {platform}: {e}")
+            return 0, 0
 
     sem = asyncio.Semaphore(4)
 
@@ -595,9 +609,22 @@ async def restrict_slash_commands(interaction: discord.Interaction) -> bool:
 
 @bot.tree.command(name="leaderboard", description="Show DSA today / 7-day stats leaderboard")
 async def slash_leaderboard(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(thinking=True)
-    embeds = await build_leaderboard_embeds(bot.http_lc)
-    await interaction.followup.send(embeds=embeds)
+    log.info(f"Received /leaderboard command from {interaction.user}")
+    try:
+        await interaction.response.defer(thinking=True)
+        log.info("Deferred interaction successfully.")
+        
+        embeds = await build_leaderboard_embeds(bot.http_lc)
+        log.info("Successfully built leaderboard embeds.")
+        
+        await interaction.followup.send(embeds=embeds)
+        log.info("Sent leaderboard followup successfully.")
+    except Exception as e:
+        log.exception(f"Exception occurred in slash_leaderboard: {e}")
+        try:
+            await interaction.followup.send("An error occurred while generating the leaderboard. Check logs.", ephemeral=True)
+        except:
+            pass
 
 
 @bot.tree.command(name="testcommand", description="Test command to verify command sync is working")
@@ -681,6 +708,13 @@ async def on_ready() -> None:
 def main() -> None:
     if not BOT_TOKEN:
         raise SystemExit("Missing BOT_ID (Discord bot token) in environment.")
+    
+    # Configure base logging to show INFO and higher from all handlers 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    )
+
     # Tell discord.py to handle Python's root logger so our __main__ logs show up too
     bot.run(BOT_TOKEN, root_logger=True)
 
