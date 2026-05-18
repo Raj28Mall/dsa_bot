@@ -12,8 +12,9 @@ LEETCODE_GRAPHQL_URL = "https://leetcode.com/graphql"
 GET_USER_STATS_QUERY = """
 query getUserStats($username: String!) {
     matchedUser(username: $username) {
-        submitStats {
+        submitStatsGlobal {
             acSubmissionNum {
+                difficulty
                 count
             }
         }
@@ -72,12 +73,16 @@ async def fetch_total_ac(
     if not matched_user:
         return None
         
-    stats = matched_user.get("submitStats", {}).get("acSubmissionNum", [])
+    stats = matched_user.get("submitStatsGlobal", {}).get("acSubmissionNum", [])
     if not stats:
         return None
         
-    total_ac = sum(item.get("count", 0) for item in stats)
-    return total_ac
+    for item in stats:
+        if item.get("difficulty") == "All":
+            return item.get("count", 0)
+            
+    # Fallback just in case
+    return stats[0].get("count", 0) if stats else 0
 
 
 async def fetch_stats_today_and_week(
