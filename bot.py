@@ -147,11 +147,11 @@ async def fetch_stats_for_all(
             # Get historical maximums up to target dates to calculate diffs
             async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, yesterday_str)) as cur:
                 yest = await cur.fetchone()
-                yest_total = yest[0] if yest and yest[0] is not None else total_ac
+                yest_total = yest[0] if yest and yest[0] is not None else 0
                 
             async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, week_ago_str)) as cur:
                 week = await cur.fetchone()
-                week_total = week[0] if week and week[0] is not None else total_ac
+                week_total = week[0] if week and week[0] is not None else 0
                 
             # Upsert today's
             await db.execute(
