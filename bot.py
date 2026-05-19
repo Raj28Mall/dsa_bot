@@ -174,7 +174,12 @@ async def fetch_stats_for_all(
                     
                 async with db.execute("SELECT MAX(total_ac) FROM user_daily_totals WHERE user_id=? AND platform=? AND utc_date <= ?", (uid, platform, week_ago_str)) as cur:
                     week = await cur.fetchone()
-                    week_total = week[0] if week and week[0] is not None else 0
+                    week_total = week[0] if week and week[0] is not None else None
+                
+                if week_total is None:
+                    async with db.execute("SELECT MIN(initial_ac) FROM user_daily_totals WHERE user_id=? AND platform=?", (uid, platform)) as cur:
+                        first_record = await cur.fetchone()
+                        week_total = first_record[0] if first_record and first_record[0] is not None else 0
                     
                 log.info(f"Historical query check for {handle}: yest_total={yest_total}, week_total={week_total}")
                 
