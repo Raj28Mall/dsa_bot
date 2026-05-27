@@ -29,6 +29,8 @@ MORNING_BODY = "Good morning — time to warm up with DSA. Pick a problem and ge
 REMINDER_TITLE = "DSA reminder"
 REMINDER_BODY = "How is practice going? Keep the streak alive — solve something if you have not yet."
 
+REMINDER_6PM_TITLE = "Reminder to solve leetcode qn"
+
 GOODNIGHT_TITLE = "Good night"
 GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
 
@@ -41,7 +43,7 @@ LB_FOOTER = (
 SCHEDULE_TIMES = [
     datetime.time(6, 0, tzinfo=IST),
     datetime.time(12, 0, tzinfo=IST),
-    datetime.time(18, 0, tzinfo=IST),
+    datetime.time(19, 35, tzinfo=IST),  # 7:35 PM for the meme
     datetime.time(22, 0, tzinfo=IST),
     datetime.time(0, 0, tzinfo=IST),
 ]
@@ -127,17 +129,17 @@ async def fetch_stats_for_all(
             lc_t, lc_w = None, None
             cf_t, cf_w = None, None
             gfg_t, gfg_w = None, None
-            
+
             if lc_name:
                 lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
             if cf_name:
                 cf_t, cf_w = await cf.fetch_stats_today_and_week(http, cf_name)
             if gfg_name:
                 gfg_t, gfg_w = await gfg.fetch_stats_today_and_week(http, gfg_name)
-            
+
             t = (lc_t or 0) + (cf_t or 0) + (gfg_t or 0)
             w = (lc_w or 0) + (cf_w or 0) + (gfg_w or 0)
-            
+
             if lc_t is None and cf_t is None and gfg_t is None:
                 t = None
             if lc_w is None and cf_w is None and gfg_w is None:
@@ -489,7 +491,7 @@ class DSABot(commands.Bot):
         self.tree.add_command(leetcode_group)
         self.tree.add_command(codeforces_group)
         self.tree.add_command(geeksforgeeks_group)
-        
+
         log.info(f"Registered command groups: {[cmd.name for cmd in self.tree.get_commands()]}")
 
         guild_id = os.getenv("GUILD_ID")
@@ -555,7 +557,16 @@ async def ist_schedule() -> None:
             color=discord.Color.green(),
         )
         await channel.send(embed=embed)
-    elif hour in (12, 18, 22):
+    elif hour == 19 and now.minute == 35:
+        # 7:35pm humorous reminder with image (no leaderboard)
+        embed = discord.Embed(
+            title=REMINDER_6PM_TITLE,
+            color=discord.Color.blue(),
+        )
+        file = discord.File("tung tung sahur.jpeg")
+        await channel.send(embed=embed, file=file)
+        return
+    elif hour in (12, 22):
         embed = discord.Embed(
             title=REMINDER_TITLE,
             description=REMINDER_BODY,
@@ -569,8 +580,10 @@ async def ist_schedule() -> None:
             color=discord.Color.dark_purple(),
         )
         await channel.send(embed=embed)
+    else:
+        return
 
-    # Always send the leaderboard after any scheduled message
+    # Send leaderboard after regular scheduled messages (not the 7:35pm meme)
     embeds = await build_leaderboard_embeds(bot.http_lc)
     await channel.send(embeds=embeds)
 
