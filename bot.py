@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import random
 import zoneinfo
 import logging
 import aiosqlite
@@ -40,13 +41,33 @@ LB_FOOTER = (
     f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
 )
 
+MEME_TIMES = [
+    datetime.time(16, 0, tzinfo=IST),
+    datetime.time(20, 0, tzinfo=IST),
+]
+
 SCHEDULE_TIMES = [
     datetime.time(6, 0, tzinfo=IST),
     datetime.time(12, 0, tzinfo=IST),
-    datetime.time(19, 35, tzinfo=IST),  # 7:35 PM for the meme
     datetime.time(22, 0, tzinfo=IST),
     datetime.time(0, 0, tzinfo=IST),
-]
+] + MEME_TIMES
+
+MEME_DIR = "memes"
+
+
+def _pick_random_meme() -> str | None:
+    """Return a random image path from the memes directory, or None if empty."""
+    try:
+        files = [
+            f for f in os.listdir(MEME_DIR)
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+        ]
+    except FileNotFoundError:
+        return None
+    if not files:
+        return None
+    return os.path.join(MEME_DIR, random.choice(files))
 
 
 def _parse_admin_ids() -> set[int]:
@@ -557,14 +578,19 @@ async def ist_schedule() -> None:
             color=discord.Color.green(),
         )
         await channel.send(embed=embed)
-    elif hour == 19 and now.minute == 35:
-        # 7:35pm humorous reminder with image (no leaderboard)
+    elif hour in (16, 20):
+        # meme reminder — pick random image, no leaderboard
+        meme_path = _pick_random_meme()
         embed = discord.Embed(
-            title=REMINDER_6PM_TITLE,
+            title=REMINDER_TITLE,
+            description=REMINDER_BODY,
             color=discord.Color.blue(),
         )
-        file = discord.File("tung tung sahur.jpeg")
-        await channel.send(embed=embed, file=file)
+        if meme_path:
+            file = discord.File(meme_path)
+            await channel.send(embed=embed, file=file)
+        else:
+            await channel.send(embed=embed)
         return
     elif hour in (12, 22):
         embed = discord.Embed(
