@@ -125,6 +125,22 @@ async def setup_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_geeksforgeeks_handle "
             "ON users(geeksforgeeks_handle) WHERE geeksforgeeks_handle IS NOT NULL"
         )
+
+        # Table to store daily submission counts per user per UTC date
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_submissions (
+                user_id INTEGER,
+                utc_date TEXT,
+                daily_count INTEGER,
+                PRIMARY KEY (user_id, utc_date)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_submissions_user_date "
+            "ON daily_submissions(user_id, utc_date)"
+        )
         await db.commit()
 
 
@@ -137,6 +153,48 @@ async def fetch_linked_users() -> list[tuple[int, str | None, str | None, str | 
             "   OR (geeksforgeeks_handle IS NOT NULL AND geeksforgeeks_handle != '')"
         ) as cur:
             return [(int(r[0]), r[1] if r[1] else None, r[2] if r[2] else None, r[3] if r[3] else None) for r in await cur.fetchall()]
+
+
+def _utc_date_key() -> str:
+    """Return current UTC date as YYYY-MM-DD string."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+def _utc_date_keys_last_7_days() -> list[str]:
+    """Return list of UTC date strings for the last 7 days (including today)."""
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    return [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+
+
+async def store_daily_submission(user_id: int, count: int, utc_date: str | None = None) -> None:
+    """Store or update daily submission count for a user on a specific UTC date."""
+    utc_date = utc_date or _utc_date_key()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO daily_submissions (user_id, utc_date, daily_count)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, utc_date, count),
+        )
+        await db.commit()
+
+
+async def fetch_weekly_from_db(user_id: int) -> int | None:
+    """Calculate weekly count by summing daily counts from the last 7 UTC days."""
+    week_keys = _utc_date_keys_last_7_days()
+    placeholders = ",".join("?" * len(week_keys))
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT COALESCE(SUM(daily_count), 0)
+            FROM daily_submissions
+            WHERE user_id = ? AND utc_date IN ({placeholders})
+            """,
+            [user_id] + list(week_keys),
+        ) as cur:
+            result = await cur.fetchone()
+            return result[0] if result and result[0] else 0
 
 
 async def fetch_stats_for_all(
@@ -159,11 +217,17 @@ async def fetch_stats_for_all(
                 gfg_t, gfg_w = await gfg.fetch_stats_today_and_week(http, gfg_name)
 
             t = (lc_t or 0) + (cf_t or 0) + (gfg_t or 0)
-            w = (lc_w or 0) + (cf_w or 0) + (gfg_w or 0)
 
             if lc_t is None and cf_t is None and gfg_t is None:
                 t = None
-            if lc_w is None and cf_w is None and gfg_w is None:
+
+            # Store aggregated daily count in DB and fetch weekly from DB
+            if t is not None:
+                await store_daily_submission(uid, t)
+
+            # Weekly count is now calculated from DB (sum of last 7 days)
+            w = await fetch_weekly_from_db(uid)
+            if t is None:
                 w = None
 
             return uid, t, w
