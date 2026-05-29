@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import leetcode_graphql as lc
 import codeforces_api as cf
 import geeksforgeeks_api as gfg
+import atcoder_api as ac
 
 load_dotenv()
 
@@ -37,7 +38,7 @@ GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more prac
 
 LB_FOOTER = (
     "Counts are accepted (AC) submissions per UTC day across linked LeetCode, "
-    "Codeforces, and GeeksforGeeks profiles. "
+    "Codeforces, GeeksforGeeks, and AtCoder profiles. "
     f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
 )
 
@@ -108,6 +109,8 @@ async def setup_db() -> None:
             await db.execute("ALTER TABLE users ADD COLUMN codeforces_handle TEXT")
         if cols and "geeksforgeeks_handle" not in cols:
             await db.execute("ALTER TABLE users ADD COLUMN geeksforgeeks_handle TEXT")
+        if cols and "atcoder_handle" not in cols:
+            await db.execute("ALTER TABLE users ADD COLUMN atcoder_handle TEXT")
         if cols and "solved" in cols:
             try:
                 await db.execute("ALTER TABLE users DROP COLUMN solved")
@@ -125,31 +128,37 @@ async def setup_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_geeksforgeeks_handle "
             "ON users(geeksforgeeks_handle) WHERE geeksforgeeks_handle IS NOT NULL"
         )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_atcoder_handle "
+            "ON users(atcoder_handle) WHERE atcoder_handle IS NOT NULL"
+        )
         await db.commit()
 
 
-async def fetch_linked_users() -> list[tuple[int, str | None, str | None, str | None]]:
+async def fetch_linked_users() -> list[tuple[int, str | None, str | None, str | None, str | None]]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT user_id, leetcode_username, codeforces_handle, geeksforgeeks_handle FROM users "
             "WHERE (leetcode_username IS NOT NULL AND leetcode_username != '') "
             "   OR (codeforces_handle IS NOT NULL AND codeforces_handle != '')"
             "   OR (geeksforgeeks_handle IS NOT NULL AND geeksforgeeks_handle != '')"
+            "   OR (atcoder_handle IS NOT NULL AND atcoder_handle != '')"
         ) as cur:
-            return [(int(r[0]), r[1] if r[1] else None, r[2] if r[2] else None, r[3] if r[3] else None) for r in await cur.fetchall()]
+            return [(int(r[0]), r[1] if r[1] else None, r[2] if r[2] else None, r[3] if r[3] else None, r[4] if r[4] else None) for r in await cur.fetchall()]
 
 
 async def fetch_stats_for_all(
     http: httpx.AsyncClient,
-    rows: list[tuple[int, str | None, str | None, str | None]],
+    rows: list[tuple[int, str | None, str | None, str | None, str | None]],
 ) -> list[tuple[int, int | None, int | None]]:
-    sem = asyncio.Semaphore(4)
+    sem = asyncio.Semaphore(5)
 
-    async def one(uid: int, lc_name: str | None, cf_name: str | None, gfg_name: str | None) -> tuple[int, int | None, int | None]:
+    async def one(uid: int, lc_name: str | None, cf_name: str | None, gfg_name: str | None, ac_name: str | None) -> tuple[int, int | None, int | None]:
         async with sem:
             lc_t, lc_w = None, None
             cf_t, cf_w = None, None
             gfg_t, gfg_w = None, None
+            ac_t, ac_w = None, None
 
             if lc_name:
                 lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
@@ -157,18 +166,20 @@ async def fetch_stats_for_all(
                 cf_t, cf_w = await cf.fetch_stats_today_and_week(http, cf_name)
             if gfg_name:
                 gfg_t, gfg_w = await gfg.fetch_stats_today_and_week(http, gfg_name)
+            if ac_name:
+                ac_t, ac_w = await ac.fetch_stats_today_and_week(http, ac_name)
 
-            t = (lc_t or 0) + (cf_t or 0) + (gfg_t or 0)
-            w = (lc_w or 0) + (cf_w or 0) + (gfg_w or 0)
+            t = (lc_t or 0) + (cf_t or 0) + (gfg_t or 0) + (ac_t or 0)
+            w = (lc_w or 0) + (cf_w or 0) + (gfg_w or 0) + (ac_w or 0)
 
-            if lc_t is None and cf_t is None and gfg_t is None:
+            if lc_t is None and cf_t is None and gfg_t is None and ac_t is None:
                 t = None
-            if lc_w is None and cf_w is None and gfg_w is None:
+            if lc_w is None and cf_w is None and gfg_w is None and ac_w is None:
                 w = None
 
             return uid, t, w
 
-    return list(await asyncio.gather(*[one(u, l, c, g) for u, l, c, g in rows]))
+    return list(await asyncio.gather(*[one(u, l, c, g, a) for u, l, c, g, a in rows]))
 
 
 def _sort_leaderboard(
@@ -426,7 +437,7 @@ async def geeksforgeeks_set(interaction: discord.Interaction, handle: str) -> No
 
     if not await gfg.user_exists(bot.http_lc, name):
         await interaction.response.send_message(
-            "Could not find that GeeksforGeeks user. Check the spelling.",
+            "Could not find that GeeksforGeeks user. Check the spelling (case-sensitive).",
             ephemeral=True,
         )
         return
@@ -496,6 +507,98 @@ async def geeksforgeeks_show(interaction: discord.Interaction) -> None:
     )
 
 
+atcoder_group = app_commands.Group(
+    name="atcoder",
+    description="Link your AtCoder profile for daily leaderboards",
+)
+
+
+@atcoder_group.command(name="set", description="Save your AtCoder handle")
+@app_commands.describe(handle="Your AtCoder handle")
+async def atcoder_set(interaction: discord.Interaction, handle: str) -> None:
+    bot = interaction.client
+    if not isinstance(bot, DSABot):
+        return
+    name = _norm_leetcode_username(handle)
+    if not name or len(name) > 64:
+        await interaction.response.send_message(
+            "Please provide a valid AtCoder handle.",
+            ephemeral=True,
+        )
+        return
+
+    if not await ac.user_exists(bot.http_lc, name):
+        await interaction.response.send_message(
+            "Could not find that AtCoder user. Check the spelling (case-sensitive).",
+            ephemeral=True,
+        )
+        return
+
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id FROM users WHERE atcoder_handle = ? AND user_id != ?",
+            (name, uid),
+        ) as cur:
+            taken = await cur.fetchone()
+        if taken:
+            await interaction.response.send_message(
+                f"That AtCoder account is already linked to <@{taken[0]}>.",
+                ephemeral=True,
+            )
+            return
+        await db.execute(
+            """
+            INSERT INTO users (user_id, atcoder_handle) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET atcoder_handle = excluded.atcoder_handle
+            """,
+            (uid, name),
+        )
+        await db.commit()
+
+    await interaction.response.send_message(
+        f"Linked AtCoder **{name}** to your Discord account.",
+        ephemeral=True,
+    )
+
+
+@atcoder_group.command(name="clear", description="Remove your linked AtCoder handle")
+async def atcoder_clear(interaction: discord.Interaction) -> None:
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET atcoder_handle = NULL WHERE user_id = ?",
+            (uid,),
+        )
+        await db.commit()
+    await interaction.response.send_message(
+        "Your AtCoder link was removed.",
+        ephemeral=True,
+    )
+
+
+@atcoder_group.command(name="show", description="Show your linked AtCoder handle")
+async def atcoder_show(interaction: discord.Interaction) -> None:
+    uid = interaction.user.id
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT atcoder_handle FROM users WHERE user_id = ?",
+            (uid,),
+        ) as cur:
+            row = await cur.fetchone()
+    ac_name = row[0] if row else None
+    if not ac_name:
+        await interaction.response.send_message(
+            "You have not linked an AtCoder profile. Use `/atcoder set`.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"Your AtCoder handle: **{ac_name}**",
+        ephemeral=True,
+    )
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -512,6 +615,7 @@ class DSABot(commands.Bot):
         self.tree.add_command(leetcode_group)
         self.tree.add_command(codeforces_group)
         self.tree.add_command(geeksforgeeks_group)
+        self.tree.add_command(atcoder_group)
 
         log.info(f"Registered command groups: {[cmd.name for cmd in self.tree.get_commands()]}")
 
