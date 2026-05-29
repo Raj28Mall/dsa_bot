@@ -138,7 +138,7 @@ async def setup_db() -> None:
 async def fetch_linked_users() -> list[tuple[int, str | None, str | None, str | None, str | None]]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT user_id, leetcode_username, codeforces_handle, geeksforgeeks_handle FROM users "
+            "SELECT user_id, leetcode_username, codeforces_handle, geeksforgeeks_handle, atcoder_handle FROM users "
             "WHERE (leetcode_username IS NOT NULL AND leetcode_username != '') "
             "   OR (codeforces_handle IS NOT NULL AND codeforces_handle != '')"
             "   OR (geeksforgeeks_handle IS NOT NULL AND geeksforgeeks_handle != '')"
