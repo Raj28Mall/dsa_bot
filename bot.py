@@ -37,7 +37,7 @@ GOODNIGHT_TITLE = "Good night"
 GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
 
 LB_FOOTER = (
-    "Counts are accepted (AC) submissions per UTC day across linked LeetCode, "
+    "Counts are accepted (AC) submissions per IST day (UTC+5:30) across linked LeetCode, "
     "Codeforces, GeeksforGeeks, and AtCoder profiles. "
     f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
 )
@@ -133,21 +133,29 @@ async def setup_db() -> None:
             "ON users(atcoder_handle) WHERE atcoder_handle IS NOT NULL"
         )
 
-        # Table to store daily submission counts per user per UTC date
+        # Table to store daily submission counts per user per IST date
+        # Migrate from utc_date to ist_date for existing databases
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS daily_submissions (
                 user_id INTEGER,
-                utc_date TEXT,
+                ist_date TEXT,
                 daily_count INTEGER,
-                PRIMARY KEY (user_id, utc_date)
+                PRIMARY KEY (user_id, ist_date)
             )
             """
         )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_daily_submissions_user_date "
-            "ON daily_submissions(user_id, utc_date)"
+            "ON daily_submissions(user_id, ist_date)"
         )
+        
+        # Migration: rename utc_date column to ist_date if it exists (for backward compatibility)
+        try:
+            await db.execute("ALTER TABLE daily_submissions RENAME COLUMN utc_date TO ist_date")
+        except Exception:
+            # Column already renamed or doesn't exist, ignore
+            pass
         await db.commit()
 
 
@@ -163,41 +171,41 @@ async def fetch_linked_users() -> list[tuple[int, str | None, str | None, str | 
             return [(int(r[0]), r[1] if r[1] else None, r[2] if r[2] else None, r[3] if r[3] else None, r[4] if r[4] else None) for r in await cur.fetchall()]
 
 
-def _utc_date_key() -> str:
-    """Return current UTC date as YYYY-MM-DD string."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+def _ist_date_key() -> str:
+    """Return current IST date as YYYY-MM-DD string."""
+    return datetime.datetime.now(IST).strftime("%Y-%m-%d")
 
 
-def _utc_date_keys_last_7_days() -> list[str]:
-    """Return list of UTC date strings for the last 7 days (including today)."""
-    today = datetime.datetime.now(datetime.timezone.utc).date()
+def _ist_date_keys_last_7_days() -> list[str]:
+    """Return list of IST date strings for the last 7 days (including today)."""
+    today = datetime.datetime.now(IST).date()
     return [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
 
-async def store_daily_submission(user_id: int, count: int, utc_date: str | None = None) -> None:
-    """Store or update daily submission count for a user on a specific UTC date."""
-    utc_date = utc_date or _utc_date_key()
+async def store_daily_submission(user_id: int, count: int, ist_date: str | None = None) -> None:
+    """Store or update daily submission count for a user on a specific IST date."""
+    ist_date = ist_date or _ist_date_key()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT OR REPLACE INTO daily_submissions (user_id, utc_date, daily_count)
+            INSERT OR REPLACE INTO daily_submissions (user_id, ist_date, daily_count)
             VALUES (?, ?, ?)
             """,
-            (user_id, utc_date, count),
+            (user_id, ist_date, count),
         )
         await db.commit()
 
 
 async def fetch_weekly_from_db(user_id: int) -> int | None:
-    """Calculate weekly count by summing daily counts from the last 7 UTC days."""
-    week_keys = _utc_date_keys_last_7_days()
+    """Calculate weekly count by summing daily counts from the last 7 IST days."""
+    week_keys = _ist_date_keys_last_7_days()
     placeholders = ",".join("?" * len(week_keys))
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             f"""
             SELECT COALESCE(SUM(daily_count), 0)
             FROM daily_submissions
-            WHERE user_id = ? AND utc_date IN ({placeholders})
+            WHERE user_id = ? AND ist_date IN ({placeholders})
             """,
             [user_id] + list(week_keys),
         ) as cur:

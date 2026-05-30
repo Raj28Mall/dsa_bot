@@ -3,9 +3,9 @@ from datetime import datetime, timezone
 import httpx
 
 from leetcode_graphql import (
-    utc_day_keys_last_7_including_today,
-    utc_today_calendar_key,
-    _count_ac_in_utc_day_keys,
+    ist_day_keys_last_7_including_today,
+    ist_today_calendar_key,
+    _count_ac_in_ist_day_keys,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,18 +72,27 @@ async def fetch_stats_today_and_week(
                         try:
                             # Parse the timestamp string and convert to Unix timestamp
                             dt = datetime.strptime(subtime_str, "%Y-%m-%d %H:%M:%S")
-                            # Assume the API returns UTC timestamps (or treat as UTC for consistency)
-                            dt_utc = dt.replace(tzinfo=UTC)
-                            timestamps.append(int(dt_utc.timestamp()))
+                            # GFG API timestamps are in IST (Indian timezone)
+                            # Convert to IST-aware datetime for proper day bucketing
+                            from datetime import timezone as tz
+                            IST = None
+                            try:
+                                import zoneinfo
+                                IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+                            except (ImportError, AttributeError):
+                                from datetime import timedelta
+                                IST = tz(timedelta(hours=5, minutes=30))
+                            dt_ist = dt.replace(tzinfo=IST)
+                            timestamps.append(int(dt_ist.timestamp()))
                         except ValueError as ve:
                             logger.error(f"Failed to parse date '{subtime_str}': {ve}")
             
-            # Use the same UTC day bucketing as LeetCode/Codeforces
-            week_keys_list = utc_day_keys_last_7_including_today()
-            today_key = utc_today_calendar_key()
+            # Use IST day bucketing for Indian users
+            week_keys_list = ist_day_keys_last_7_including_today()
+            today_key = ist_today_calendar_key()
             day_keys = set(week_keys_list)
             
-            counts = _count_ac_in_utc_day_keys(timestamps, day_keys)
+            counts = _count_ac_in_ist_day_keys(timestamps, day_keys)
             today_count = counts.get(today_key, 0)
             week_sum = sum(counts.get(k, 0) for k in week_keys_list)
             

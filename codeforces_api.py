@@ -6,9 +6,9 @@ import httpx
 import json
 
 from leetcode_graphql import (
-    utc_day_keys_last_7_including_today,
-    utc_today_calendar_key,
-    _count_ac_in_utc_day_keys,
+    ist_day_keys_last_7_including_today,
+    ist_today_calendar_key,
+    _count_ac_in_ist_day_keys,
 )
 
 
@@ -53,11 +53,11 @@ async def fetch_stats_today_and_week(
                 except (TypeError, ValueError):
                     continue
 
-    week_keys_list = utc_day_keys_last_7_including_today()
-    today_key = utc_today_calendar_key()
+    week_keys_list = ist_day_keys_last_7_including_today()
+    today_key = ist_today_calendar_key()
     day_keys = set(week_keys_list)
 
-    counts = _count_ac_in_utc_day_keys(timestamps, day_keys)
+    counts = _count_ac_in_ist_day_keys(timestamps, day_keys)
     today_count = counts.get(today_key, 0)
     week_sum = sum(counts.get(k, 0) for k in week_keys_list)
     return today_count, week_sum

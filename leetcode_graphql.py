@@ -10,6 +10,14 @@ from typing import Any
 import httpx
 
 UTC = timezone.utc
+IST = None  # Placeholder, will be set when importing
+try:
+    import zoneinfo
+    IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+except (ImportError, AttributeError):
+    # Fallback for Python < 3.9 or systems without zoneinfo
+    from datetime import timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
 
 LEETCODE_GRAPHQL_URL = "https://leetcode.com/graphql"
 
@@ -41,6 +49,11 @@ def _utc_midnight_ts_for_date(d: datetime.date) -> str:
     return str(int(dt.timestamp()))
 
 
+def _ist_midnight_ts_for_date(d: datetime.date) -> str:
+    dt = datetime.datetime.combine(d, datetime.time.min, tzinfo=IST)
+    return str(int(dt.timestamp()))
+
+
 def utc_today_calendar_key() -> str:
     return _utc_midnight_ts_for_date(datetime.datetime.now(UTC).date())
 
@@ -48,6 +61,28 @@ def utc_today_calendar_key() -> str:
 def utc_day_keys_last_7_including_today() -> list[str]:
     today = datetime.datetime.now(UTC).date()
     return [_utc_midnight_ts_for_date(today - datetime.timedelta(days=i)) for i in range(7)]
+
+
+def ist_today_calendar_key() -> str:
+    """Return the timestamp key for today's midnight in IST."""
+    return _ist_midnight_ts_for_date(datetime.datetime.now(IST).date())
+
+
+def ist_day_keys_last_7_including_today() -> list[str]:
+    """Return list of IST day keys for the last 7 days (including today)."""
+    today = datetime.datetime.now(IST).date()
+    return [_ist_midnight_ts_for_date(today - datetime.timedelta(days=i)) for i in range(7)]
+
+
+def _count_ac_in_ist_day_keys(timestamps: list[int], day_keys: set[str]) -> dict[str, int]:
+    """Count AC submissions bucketed by IST days instead of UTC."""
+    counts = {k: 0 for k in day_keys}
+    for ts in timestamps:
+        day = datetime.datetime.fromtimestamp(ts, tz=IST).date()
+        k = _ist_midnight_ts_for_date(day)
+        if k in day_keys:
+            counts[k] += 1
+    return counts
 
 
 async def graphql_request(
@@ -88,29 +123,21 @@ async def user_exists(client: httpx.AsyncClient, username: str) -> bool:
 RECENT_AC_FETCH_LIMIT = 1000
 
 
-def _count_ac_in_utc_day_keys(timestamps: list[int], day_keys: set[str]) -> dict[str, int]:
-    counts = {k: 0 for k in day_keys}
-    for ts in timestamps:
-        day = datetime.datetime.fromtimestamp(ts, tz=UTC).date()
-        k = _utc_midnight_ts_for_date(day)
-        if k in day_keys:
-            counts[k] += 1
-    return counts
-
-
 async def fetch_stats_today_and_week(
     client: httpx.AsyncClient,
     username: str,
 ) -> tuple[int | None, int | None]:
     """
-    Returns (today_ac_count, last_7_utc_days_ac_sum) from recent AC submissions (UTC days).
+    Returns (today_ac_count, last_7_ist_days_ac_sum) from recent AC submissions (IST days).
     None means fetch/parse failure or unknown user.
 
     Uses recentAcSubmissionList (accepted only). Counts can be capped if a user exceeds
     RECENT_AC_FETCH_LIMIT recent AC submissions returned by the API for the window.
+    
+    Uses IST (Indian Standard Time) for day bucketing since the primary user base is in India.
     """
-    week_keys_list = utc_day_keys_last_7_including_today()
-    today_key = utc_today_calendar_key()
+    week_keys_list = ist_day_keys_last_7_including_today()
+    today_key = ist_today_calendar_key()
     day_keys = set(week_keys_list)
 
     data = await graphql_request(
@@ -134,7 +161,7 @@ async def fetch_stats_today_and_week(
         except (TypeError, ValueError):
             continue
 
-    counts = _count_ac_in_utc_day_keys(timestamps, day_keys)
+    counts = _count_ac_in_ist_day_keys(timestamps, day_keys)
     today_count = counts.get(today_key, 0)
     week_sum = sum(counts.get(k, 0) for k in week_keys_list)
     return today_count, week_sum
