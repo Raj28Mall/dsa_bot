@@ -13,6 +13,7 @@ from leetcode_graphql import (
     ist_day_keys_last_7_including_today,
     ist_today_calendar_key,
     _count_ac_in_ist_day_keys,
+    IST,
 )
 
 
@@ -42,8 +43,12 @@ async def fetch_stats_today_and_week(
     handle: str,
 ) -> tuple[int | None, int | None]:
     """Return (today_ac_count, last_7_ist_days_ac_sum) for an AtCoder user."""
+    import logging
     import time
-
+    from datetime import datetime
+    
+    logger = logging.getLogger(__name__)
+    
     week_ago = int(time.time()) - 7 * 86400
 
     try:
@@ -72,8 +77,19 @@ async def fetch_stats_today_and_week(
     week_keys_list = ist_day_keys_last_7_including_today()
     today_key = ist_today_calendar_key()
     day_keys = set(week_keys_list)
+    
+    # DEBUG: Log timestamp analysis
+    logger.info(f"AtCoder {handle}: Found {len(timestamps)} AC submissions")
+    logger.info(f"AtCoder {handle}: Today key={today_key}, Week keys={week_keys_list}")
+    
+    if timestamps:
+        for ts in timestamps:
+            dt_ist = datetime.fromtimestamp(ts, tz=IST)
+            logger.info(f"AtCoder {handle}: Timestamp {ts} -> IST: {dt_ist}")
 
     counts = _count_ac_in_ist_day_keys(timestamps, day_keys)
     today_count = counts.get(today_key, 0)
     week_sum = sum(counts.get(k, 0) for k in week_keys_list)
+    
+    logger.info(f"AtCoder {handle} -> today: {today_count}, week: {week_sum}, counts: {counts}")
     return today_count, week_sum
