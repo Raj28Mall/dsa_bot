@@ -1,0 +1,95 @@
+"""AtCoder REST client for DSA tracker.
+
+Uses the AtCoder Problems unofficial API — no auth required.
+- User existence: GET /v3/user_info?user={handle}
+- Submissions: GET /v3/user/submissions?user={handle}&from_second={7 days ago}
+"""
+
+from __future__ import annotations
+
+import httpx
+
+from leetcode_graphql import (
+    ist_day_keys_last_7_including_today,
+    ist_today_calendar_key,
+    _count_ac_in_ist_day_keys,
+    IST,
+)
+
+
+ATCODER_USER_INFO_URL = "https://kenkoooo.com/atcoder/atcoder-api/v3/user_info"
+ATCODER_SUBMISSIONS_URL = (
+    "https://kenkoooo.com/atcoder/atcoder-api/v3/user/submissions"
+)
+
+
+async def user_exists(client: httpx.AsyncClient, handle: str) -> bool:
+    """Check whether an AtCoder handle exists via the unofficial AtCoder Problems API."""
+    try:
+        r = await client.get(
+            ATCODER_USER_INFO_URL,
+            params={"user": handle},
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data.get("user_id") == handle
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
+async def fetch_stats_today_and_week(
+    client: httpx.AsyncClient,
+    handle: str,
+) -> tuple[int | None, int | None]:
+    """Return (today_ac_count, last_7_ist_days_ac_sum) for an AtCoder user."""
+    import logging
+    import time
+    from datetime import datetime
+    
+    logger = logging.getLogger(__name__)
+    
+    week_ago = int(time.time()) - 7 * 86400
+
+    try:
+        r = await client.get(
+            ATCODER_SUBMISSIONS_URL,
+            params={"user": handle, "from_second": week_ago},
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+    except (httpx.HTTPError, ValueError):
+        return None, None
+
+    # Filter for AC verdicts only.
+    # AtCoder result is typically "AC".
+    timestamps: list[int] = []
+    for sub in data:
+        if sub.get("result") == "AC":
+            epoch = sub.get("epoch_second")
+            if epoch is not None:
+                try:
+                    timestamps.append(int(epoch))
+                except (TypeError, ValueError):
+                    continue
+
+    week_keys_list = ist_day_keys_last_7_including_today()
+    today_key = ist_today_calendar_key()
+    day_keys = set(week_keys_list)
+    
+    # DEBUG: Log timestamp analysis
+    logger.info(f"AtCoder {handle}: Found {len(timestamps)} AC submissions")
+    logger.info(f"AtCoder {handle}: Today key={today_key}, Week keys={week_keys_list}")
+    
+    if timestamps:
+        for ts in timestamps:
+            dt_ist = datetime.fromtimestamp(ts, tz=IST)
+            logger.info(f"AtCoder {handle}: Timestamp {ts} -> IST: {dt_ist}")
+
+    counts = _count_ac_in_ist_day_keys(timestamps, day_keys)
+    today_count = counts.get(today_key, 0)
+    week_sum = sum(counts.get(k, 0) for k in week_keys_list)
+    
+    logger.info(f"AtCoder {handle} -> today: {today_count}, week: {week_sum}, counts: {counts}")
+    return today_count, week_sum
