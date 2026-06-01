@@ -48,10 +48,10 @@ MEME_TIMES = [
 ]
 
 SCHEDULE_TIMES = [
-    datetime.time(6, 0, tzinfo=IST),
+    datetime.time(8, 0, tzinfo=IST),
     datetime.time(12, 0, tzinfo=IST),
-    datetime.time(22, 0, tzinfo=IST),
-    datetime.time(0, 0, tzinfo=IST),
+    datetime.time(21, 0, tzinfo=IST),
+    datetime.time(23, 59, tzinfo=IST),
 ] + MEME_TIMES
 
 MEME_DIR = "memes"
