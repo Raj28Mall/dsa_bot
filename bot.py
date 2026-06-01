@@ -825,6 +825,15 @@ async def testschedule(ctx: commands.Context) -> None:
     await channel.send(embeds=embeds)
 
 
+@bot.command(name="testleaderboard")
+async def test_leaderboard(ctx: commands.Context) -> None:
+    if not ADMIN_IDS or ctx.author.id not in ADMIN_IDS:
+        await ctx.send("You do not have permission to use this command.")
+        return
+    embeds = await build_leaderboard_embeds(bot.http_lc)
+    await ctx.send(embeds=embeds)
+
+
 @bot.event
 async def on_ready() -> None:
     log.info(f"Logged in as {bot.user} ({bot.user.id if bot.user else '?'})")
