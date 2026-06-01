@@ -148,6 +148,12 @@ async def setup_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_daily_submissions_user_date "
             "ON daily_submissions(user_id, utc_date)"
         )
+        # Migration: rename ist_date column to utc_date for backward compatibility.
+        try:
+            await db.execute("ALTER TABLE daily_submissions RENAME COLUMN ist_date TO utc_date")
+        except Exception:
+            # Column already renamed or doesn't exist, ignore.
+            pass
         await db.commit()
 
 
