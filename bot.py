@@ -825,13 +825,14 @@ async def testschedule(ctx: commands.Context) -> None:
     await channel.send(embeds=embeds)
 
 
-@bot.command(name="testleaderboard")
-async def test_leaderboard(ctx: commands.Context) -> None:
-    if not ADMIN_IDS or ctx.author.id not in ADMIN_IDS:
-        await ctx.send("You do not have permission to use this command.")
+@bot.tree.command(name="dontuse", description="nothing to see here")
+async def dontuse(interaction: discord.Interaction) -> None:
+    if not ADMIN_IDS or interaction.user.id not in ADMIN_IDS:
+        await interaction.response.send_message("nothing to see here", ephemeral=True)
         return
+    await interaction.response.defer(thinking=True, ephemeral=True)
     embeds = await build_leaderboard_embeds(bot.http_lc)
-    await ctx.send(embeds=embeds)
+    await interaction.followup.send(embeds=embeds, ephemeral=True)
 
 
 @bot.event
