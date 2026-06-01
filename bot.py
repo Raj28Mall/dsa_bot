@@ -151,7 +151,7 @@ async def setup_db() -> None:
         # Migration: rename ist_date column to utc_date for backward compatibility.
         try:
             await db.execute("ALTER TABLE daily_submissions RENAME COLUMN ist_date TO utc_date")
-        except Exception:
+        except aiosqlite.OperationalError:
             # Column already renamed or doesn't exist, ignore.
             pass
         await db.commit()
