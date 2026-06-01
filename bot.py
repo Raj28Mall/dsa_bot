@@ -153,6 +153,12 @@ async def setup_db() -> None:
             columns = {row[1] for row in await cur.fetchall()}
         if "ist_date" in columns and "utc_date" not in columns:
             await db.execute("ALTER TABLE daily_submissions RENAME COLUMN ist_date TO utc_date")
+        elif "ist_date" in columns and "utc_date" in columns:
+            await db.execute(
+                "UPDATE daily_submissions "
+                "SET utc_date = COALESCE(utc_date, ist_date) "
+                "WHERE ist_date IS NOT NULL"
+            )
         await db.commit()
 
 
