@@ -133,29 +133,21 @@ async def setup_db() -> None:
             "ON users(atcoder_handle) WHERE atcoder_handle IS NOT NULL"
         )
 
-        # Table to store daily submission counts per user per IST date
-        # Migrate from utc_date to ist_date for existing databases
+        # Table to store daily submission counts per user per UTC date
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS daily_submissions (
                 user_id INTEGER,
-                ist_date TEXT,
+                utc_date TEXT,
                 daily_count INTEGER,
-                PRIMARY KEY (user_id, ist_date)
+                PRIMARY KEY (user_id, utc_date)
             )
             """
         )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_daily_submissions_user_date "
-            "ON daily_submissions(user_id, ist_date)"
+            "ON daily_submissions(user_id, utc_date)"
         )
-        
-        # Migration: rename utc_date column to ist_date if it exists (for backward compatibility)
-        try:
-            await db.execute("ALTER TABLE daily_submissions RENAME COLUMN utc_date TO ist_date")
-        except Exception:
-            # Column already renamed or doesn't exist, ignore
-            pass
         await db.commit()
 
 
@@ -206,6 +198,48 @@ async def fetch_weekly_from_db(user_id: int) -> int | None:
             SELECT COALESCE(SUM(daily_count), 0)
             FROM daily_submissions
             WHERE user_id = ? AND ist_date IN ({placeholders})
+            """,
+            [user_id] + list(week_keys),
+        ) as cur:
+            result = await cur.fetchone()
+            return result[0] if result and result[0] else 0
+
+
+def _utc_date_key() -> str:
+    """Return current UTC date as YYYY-MM-DD string."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
+def _utc_date_keys_last_7_days() -> list[str]:
+    """Return list of UTC date strings for the last 7 days (including today)."""
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    return [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+
+
+async def store_daily_submission(user_id: int, count: int, utc_date: str | None = None) -> None:
+    """Store or update daily submission count for a user on a specific UTC date."""
+    utc_date = utc_date or _utc_date_key()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO daily_submissions (user_id, utc_date, daily_count)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, utc_date, count),
+        )
+        await db.commit()
+
+
+async def fetch_weekly_from_db(user_id: int) -> int | None:
+    """Calculate weekly count by summing daily counts from the last 7 UTC days."""
+    week_keys = _utc_date_keys_last_7_days()
+    placeholders = ",".join("?" * len(week_keys))
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"""
+            SELECT COALESCE(SUM(daily_count), 0)
+            FROM daily_submissions
+            WHERE user_id = ? AND utc_date IN ({placeholders})
             """,
             [user_id] + list(week_keys),
         ) as cur:
