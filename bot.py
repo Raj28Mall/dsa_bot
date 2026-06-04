@@ -201,6 +201,53 @@ async def store_daily_submission(user_id: int, count: int, utc_date: str | None 
         await db.commit()
 
 
+async def fetch_record_daily() -> tuple[int, int, str] | None:
+    """Return (user_id, count, utc_date) for the all-time highest daily count, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT user_id, daily_count, utc_date FROM daily_submissions ORDER BY daily_count DESC, utc_date DESC LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+            return (int(row[0]), int(row[1]), str(row[2])) if row else None
+
+
+async def fetch_record_weekly() -> tuple[int, int] | None:
+    """Return (user_id, count) for the all-time highest rolling 7-day sum, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT user_id FROM daily_submissions") as cur:
+            user_ids = [int(r[0]) for r in await cur.fetchall()]
+        if not user_ids:
+            return None
+
+        best_uid, best_count = 0, 0
+        for uid in user_ids:
+            async with db.execute(
+                "SELECT utc_date, daily_count FROM daily_submissions WHERE user_id = ? ORDER BY utc_date ASC",
+                (uid,),
+            ) as cur:
+                rows = [(str(r[0]), int(r[1])) for r in await cur.fetchall()]
+            if not rows:
+                continue
+            # Sliding window: 7 consecutive calendar days
+            window_sum = 0
+            left = 0
+            for right in range(len(rows)):
+                rdate = datetime.date.fromisoformat(rows[right][0])
+                window_sum += rows[right][1]
+                # Shrink window to within 7 days
+                while left <= right:
+                    ldate = datetime.date.fromisoformat(rows[left][0])
+                    if (rdate - ldate).days >= 7:
+                        window_sum -= rows[left][1]
+                        left += 1
+                    else:
+                        break
+                if window_sum > best_count:
+                    best_count = window_sum
+                    best_uid = uid
+        return (best_uid, best_count) if best_uid != 0 else None
+
+
 async def fetch_weekly_from_db(user_id: int) -> int | None:
     """Calculate weekly count by summing daily counts from the last 7 UTC days."""
     week_keys = _utc_date_keys_last_7_days()
@@ -744,6 +791,45 @@ async def test_command(interaction: discord.Interaction) -> None:
         "✅ Test command is working! This confirms the bot is syncing commands correctly.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="record", description="Show all-time best daily and weekly submission counts")
+async def slash_record(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(thinking=True)
+
+    daily = await fetch_record_daily()
+    weekly = await fetch_record_weekly()
+
+    if daily is None and weekly is None:
+        await interaction.followup.send("No submission data recorded yet.")
+        return
+
+    embed = discord.Embed(
+        title="🏆 All-Time Records",
+        color=discord.Color.gold(),
+    )
+
+    if daily is not None:
+        uid, count, date_str = daily
+        try:
+            dt = datetime.date.fromisoformat(date_str).strftime("%d %b %Y")
+        except ValueError:
+            dt = date_str
+        embed.add_field(
+            name="🔥 Highest Daily Count",
+            value=f"<@{uid}> — **{count}** submissions on {dt}",
+            inline=False,
+        )
+
+    if weekly is not None:
+        uid, count = weekly
+        embed.add_field(
+            name="📅 Highest Weekly Count",
+            value=f"<@{uid}> — **{count}** submissions in a rolling 7-day window",
+            inline=False,
+        )
+
+    await interaction.followup.send(embed=embed)
 
 
 @tasks.loop(time=SCHEDULE_TIMES)
