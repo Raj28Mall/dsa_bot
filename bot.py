@@ -47,6 +47,8 @@ MEME_TIMES = [
     datetime.time(20, 0, tzinfo=IST),
 ]
 
+DISABLE_MEMES = os.getenv("DISABLE_MEMES", "0").strip().lower() in ("1", "true", "yes")
+
 SCHEDULE_TIMES = [
     datetime.time(8, 0, tzinfo=IST),
     datetime.time(12, 0, tzinfo=IST),
@@ -761,16 +763,19 @@ async def ist_schedule() -> None:
         )
         await channel.send(embed=embed)
     elif hour in (16, 20):
-        # meme reminder — pick random image, no leaderboard
-        meme_path = _pick_random_meme()
+        # meme reminder — pick random image, no leaderboard (unless memes are disabled)
         embed = discord.Embed(
             title=REMINDER_TITLE,
             description=REMINDER_BODY,
             color=discord.Color.blue(),
         )
-        if meme_path:
-            file = discord.File(meme_path)
-            await channel.send(embed=embed, file=file)
+        if not DISABLE_MEMES:
+            meme_path = _pick_random_meme()
+            if meme_path:
+                file = discord.File(meme_path)
+                await channel.send(embed=embed, file=file)
+            else:
+                await channel.send(embed=embed)
         else:
             await channel.send(embed=embed)
         return
