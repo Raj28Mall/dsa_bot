@@ -753,7 +753,7 @@ async def ist_schedule() -> None:
     now = datetime.datetime.now(IST)
     hour = now.hour
 
-    if hour == 6:
+    if hour == 8:
         embed = discord.Embed(
             title=MORNING_TITLE,
             description=MORNING_BODY,
@@ -774,14 +774,14 @@ async def ist_schedule() -> None:
         else:
             await channel.send(embed=embed)
         return
-    elif hour in (12, 22):
+    elif hour in (12, 21):
         embed = discord.Embed(
             title=REMINDER_TITLE,
             description=REMINDER_BODY,
             color=discord.Color.blue(),
         )
         await channel.send(embed=embed)
-    elif hour == 0:
+    elif hour == 23:
         embed = discord.Embed(
             title=GOODNIGHT_TITLE,
             description=GOODNIGHT_BODY,
