@@ -8,6 +8,7 @@ from datetime import timezone
 from typing import Any
 
 import httpx
+import aiosqlite
 
 UTC = timezone.utc
 IST = None  # Placeholder, will be set when importing
@@ -31,13 +32,15 @@ query UserProfileCalendar($username: String!, $year: Int!) {
 }
 """
 
-# submissionCalendar counts every run (WA/TLE/etc.). Leaderboards use recent AC only.
-AC_STATS_FOR_LEADERBOARD_QUERY = """
-query AcStatsLeaderboard($username: String!, $limit: Int!) {
+# recentAcSubmissionList silently caps at ~20. Use with dedup accumulation per day.
+RECENT_AC_QUERY = """
+query RecentAc($username: String!, $limit: Int!) {
   matchedUser(username: $username) {
     username
   }
   recentAcSubmissionList(username: $username, limit: $limit) {
+    id
+    titleSlug
     timestamp
   }
 }
@@ -85,6 +88,11 @@ def _count_ac_in_ist_day_keys(timestamps: list[int], day_keys: set[str]) -> dict
     return counts
 
 
+def _ist_today_date_str() -> str:
+    """Return today's date in IST as 'YYYY-MM-DD'."""
+    return datetime.datetime.now(IST).strftime("%Y-%m-%d")
+
+
 async def graphql_request(
     client: httpx.AsyncClient,
     query: str,
@@ -119,49 +127,132 @@ async def user_exists(client: httpx.AsyncClient, username: str) -> bool:
     return bool(data and data.get("matchedUser"))
 
 
-# Large enough for very active weekly AC volume; API has no pagination on this list.
-RECENT_AC_FETCH_LIMIT = 1000
+async def accumulate_daily_ac_problems(
+    client: httpx.AsyncClient,
+    username: str,
+    db_path: str,
+) -> int | None:
+    """
+    Poll recentAcSubmissionList, deduplicate problems for today (IST), and persist.
+    Returns the unique count of today's AC problems after accumulation.
+    Returns None on fetch failure or unknown user.
+    """
+    today_str = _ist_today_date_str()
+
+    data = await graphql_request(
+        client,
+        RECENT_AC_QUERY,
+        {"username": username, "limit": 20},
+    )
+    if not data or not data.get("matchedUser"):
+        return None
+
+    rows = data.get("recentAcSubmissionList")
+    if rows is None:
+        return None
+
+    # Collect slugs belonging to today (IST)
+    today_slugs: set[str] = set()
+    for row in rows:
+        slug = row.get("titleSlug")
+        ts = row.get("timestamp")
+        if not slug or ts is None:
+            continue
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            continue
+        sub_date = datetime.datetime.fromtimestamp(ts, tz=IST).strftime("%Y-%m-%d")
+        if sub_date == today_str:
+            today_slugs.add(str(slug))
+
+    if today_slugs:
+        async with aiosqlite.connect(db_path) as db:
+            await db.executemany(
+                "INSERT OR IGNORE INTO lc_daily_problems (leetcode_username, problem_slug, ist_date) VALUES (?, ?, ?)",
+                [(username, slug, today_str) for slug in today_slugs],
+            )
+            await db.commit()
+
+    # Return the current unique count for today
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT problem_slug) FROM lc_daily_problems WHERE leetcode_username = ? AND ist_date = ?",
+            (username, today_str),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def fetch_daily_unique_from_db(
+    username: str,
+    db_path: str,
+) -> int:
+    """Read the already-accumulated unique daily count from the database."""
+    today_str = _ist_today_date_str()
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT problem_slug) FROM lc_daily_problems WHERE leetcode_username = ? AND ist_date = ?",
+            (username, today_str),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
 
 
 async def fetch_stats_today_and_week(
     client: httpx.AsyncClient,
     username: str,
+    db_path: str = "dsa_tracker.db",
 ) -> tuple[int | None, int | None]:
     """
-    Returns (today_ac_count, last_7_ist_days_ac_sum) from recent AC submissions (IST days).
+    Returns (today_unique_ac_count, last_7_calendar_days_sum).
+
+    Today's count comes from the accumulated deduplicated problem set (lc_daily_problems).
+    Week count comes from submissionCalendar (all submission runs, IST-bucketed).
+
     None means fetch/parse failure or unknown user.
-
-    Uses recentAcSubmissionList (accepted only). Counts can be capped if a user exceeds
-    RECENT_AC_FETCH_LIMIT recent AC submissions returned by the API for the window.
-    
-    Uses IST (Indian Standard Time) for day bucketing since the primary user base is in India.
     """
-    week_keys_list = ist_day_keys_last_7_including_today()
-    today_key = ist_today_calendar_key()
-    day_keys = set(week_keys_list)
+    # --- Daily: read from the accumulated dedup table ---
+    today_str = _ist_today_date_str()
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT problem_slug) FROM lc_daily_problems WHERE leetcode_username = ? AND ist_date = ?",
+            (username, today_str),
+        ) as cur:
+            row = await cur.fetchone()
+            daily = row[0] if row else 0
 
+    # --- Weekly: use submissionCalendar ---
+    year = datetime.datetime.now(UTC).year
     data = await graphql_request(
         client,
-        AC_STATS_FOR_LEADERBOARD_QUERY,
-        {"username": username, "limit": RECENT_AC_FETCH_LIMIT},
+        USER_PROFILE_CALENDAR_QUERY,
+        {"username": username, "year": year},
     )
-    if not data:
-        return None, None
-    if not data.get("matchedUser"):
-        return None, None
-    rows = data.get("recentAcSubmissionList")
-    if rows is None:
+    if not data or not data.get("matchedUser"):
         return None, None
 
-    timestamps: list[int] = []
-    for row in rows:
-        ts = row.get("timestamp")
-        try:
-            timestamps.append(int(ts))
-        except (TypeError, ValueError):
-            continue
+    cal = data.get("matchedUser", {}).get("userCalendar", {}).get("submissionCalendar")
+    if cal is None:
+        return daily, None
 
-    counts = _count_ac_in_ist_day_keys(timestamps, day_keys)
-    today_count = counts.get(today_key, 0)
-    week_sum = sum(counts.get(k, 0) for k in week_keys_list)
-    return today_count, week_sum
+    try:
+        calendar: dict[str, int] = json.loads(cal)
+    except (json.JSONDecodeError, TypeError):
+        return daily, None
+
+    week_keys_list = ist_day_keys_last_7_including_today()
+    week_sum = sum(calendar.get(k, 0) for k in week_keys_list)
+
+    return daily, week_sum
+
+
+async def clear_yesterdays_problems(db_path: str) -> None:
+    """Delete lc_daily_problems rows not from today (IST). Called at midnight."""
+    today_str = _ist_today_date_str()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "DELETE FROM lc_daily_problems WHERE ist_date != ?",
+            (today_str,),
+        )
+        await db.commit()

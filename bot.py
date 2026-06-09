@@ -39,7 +39,7 @@ GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more prac
 LB_FOOTER = (
     "Counts are accepted (AC) submissions per IST day (UTC+5:30) across linked LeetCode, "
     "Codeforces, GeeksforGeeks, and AtCoder profiles. "
-    f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
+    "LeetCode counts unique AC problems per day (deduplicated across polls)."
 )
 
 MEME_TIMES = [
@@ -118,6 +118,23 @@ async def setup_db() -> None:
                 await db.execute("ALTER TABLE users DROP COLUMN solved")
             except aiosqlite.OperationalError:
                 pass
+
+        # Table to track unique LeetCode problems solved per user per IST day.
+        # Accumulated via hourly polling of recentAcSubmissionList.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lc_daily_problems (
+                leetcode_username TEXT,
+                problem_slug TEXT,
+                ist_date TEXT,
+                PRIMARY KEY (leetcode_username, problem_slug, ist_date)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lc_daily_problems_date "
+            "ON lc_daily_problems(ist_date)"
+        )
         await db.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_leetcode_username "
             "ON users(leetcode_username) WHERE leetcode_username IS NOT NULL"
@@ -279,7 +296,7 @@ async def fetch_stats_for_all(
             ac_t, ac_w = None, None
 
             if lc_name:
-                lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
+                lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name, DB_PATH)
             if cf_name:
                 cf_t, cf_w = await cf.fetch_stats_today_and_week(http, cf_name)
             if gfg_name:
@@ -759,6 +776,10 @@ class DSABot(commands.Bot):
             log.info(f"Synced {len(synced)} commands globally")
         if not ist_schedule.is_running():
             ist_schedule.start()
+        if not poll_lc_accumulate.is_running():
+            poll_lc_accumulate.start()
+        if not midnight_cleanup_lc_problems.is_running():
+            midnight_cleanup_lc_problems.start()
 
     async def close(self) -> None:
         await self.http_lc.aclose()
@@ -889,6 +910,35 @@ async def ist_schedule() -> None:
 
 @ist_schedule.before_loop
 async def before_ist_schedule() -> None:
+    await bot.wait_until_ready()
+
+
+@tasks.loop(hours=1)
+async def poll_lc_accumulate() -> None:
+    """Hourly: poll recentAcSubmissionList for every linked LeetCode user,
+    dedupe into lc_daily_problems. Store the running daily count in daily_submissions."""
+    rows = await fetch_linked_users()
+    for uid, lc_name, _, _, _ in rows:
+        if not lc_name:
+            continue
+        count = await lc.accumulate_daily_ac_problems(bot.http_lc, lc_name, DB_PATH)
+        if count is not None:
+            await store_daily_submission(uid, count)
+
+
+@poll_lc_accumulate.before_loop
+async def before_poll_lc_accumulate() -> None:
+    await bot.wait_until_ready()
+
+
+@tasks.loop(time=[datetime.time(0, 0, tzinfo=IST)])
+async def midnight_cleanup_lc_problems() -> None:
+    """At midnight IST: clear yesterday's accumulated LC problems."""
+    await lc.clear_yesterdays_problems(DB_PATH)
+
+
+@midnight_cleanup_lc_problems.before_loop
+async def before_midnight_cleanup() -> None:
     await bot.wait_until_ready()
 
 
