@@ -916,14 +916,12 @@ async def before_ist_schedule() -> None:
 @tasks.loop(hours=1)
 async def poll_lc_accumulate() -> None:
     """Hourly: poll recentAcSubmissionList for every linked LeetCode user,
-    dedupe into lc_daily_problems. Store the running daily count in daily_submissions."""
+    dedupe into lc_daily_problems. Daily counts are stored by fetch_stats_for_all."""
     rows = await fetch_linked_users()
     for uid, lc_name, _, _, _ in rows:
         if not lc_name:
             continue
-        count = await lc.accumulate_daily_ac_problems(bot.http_lc, lc_name, DB_PATH)
-        if count is not None:
-            await store_daily_submission(uid, count)
+        await lc.accumulate_daily_ac_problems(bot.http_lc, lc_name, DB_PATH)
 
 
 @poll_lc_accumulate.before_loop
