@@ -135,7 +135,7 @@ async def setup_db() -> None:
             "ON users(atcoder_handle) WHERE atcoder_handle IS NOT NULL"
         )
 
-        # Table to store daily submission counts per user per UTC date
+        # Table to store daily submission counts per user per IST date
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS daily_submissions (
@@ -187,16 +187,16 @@ def _ist_date_keys_last_7_days() -> list[str]:
     return [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
 
-async def store_daily_submission(user_id: int, count: int, utc_date: str | None = None) -> None:
+async def store_daily_submission(user_id: int, count: int, date_str: str | None = None) -> None:
     """Store or update daily submission count for a user on a specific IST date."""
-    utc_date = utc_date or _ist_date_key()
+    date_str = date_str or _ist_date_key()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             INSERT OR REPLACE INTO daily_submissions (user_id, utc_date, daily_count)
             VALUES (?, ?, ?)
             """,
-            (user_id, utc_date, count),
+            (user_id, date_str, count),
         )
         await db.commit()
 

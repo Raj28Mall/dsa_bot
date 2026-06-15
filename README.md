@@ -1,6 +1,6 @@
 # DSA Tracker Discord Bot
 
-A Discord bot for a small group that links each member's **LeetCode**, **Codeforces**, and **GeeksforGeeks** profiles, pulls submission stats from their respective APIs, and posts **IST**-scheduled reminders with **today** and **last 7 UTC calendar days** leaderboards.
+A Discord bot for a small group that links each member's **LeetCode**, **Codeforces**, **GeeksforGeeks**, and **AtCoder** profiles, pulls submission stats from their respective APIs, and posts **IST**-scheduled reminders with **today** and **last 7 IST calendar days** leaderboards.
 
 ## Features
 
@@ -13,7 +13,7 @@ A Discord bot for a small group that links each member's **LeetCode**, **Codefor
 - **`/leaderboard`** and **`!leaderboard`**: On-demand leaderboard (same data as reminders).
 - **`!testschedule`**: Admin-only; posts a reminder + leaderboard in the current channel (set `ADMIN_USER_IDS` in `.env`).
 
-Leaderboard **footer** explains that daily counts are aggregated per **UTC calendar day** across all linked platforms (LeetCode, Codeforces, and GeeksforGeeks).
+Leaderboard **footer** explains that daily counts are aggregated per **IST calendar day** (UTC+5:30) across all linked platforms (LeetCode, Codeforces, GeeksforGeeks, and AtCoder).
 
 
 ## Prerequisites
