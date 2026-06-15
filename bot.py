@@ -176,20 +176,20 @@ async def fetch_linked_users() -> list[tuple[int, str | None, str | None, str | 
             return [(int(r[0]), r[1] if r[1] else None, r[2] if r[2] else None, r[3] if r[3] else None, r[4] if r[4] else None) for r in await cur.fetchall()]
 
 
-def _utc_date_key() -> str:
-    """Return current UTC date as YYYY-MM-DD string."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+def _ist_date_key() -> str:
+    """Return current IST date as YYYY-MM-DD string."""
+    return datetime.datetime.now(IST).strftime("%Y-%m-%d")
 
 
-def _utc_date_keys_last_7_days() -> list[str]:
-    """Return list of UTC date strings for the last 7 days (including today)."""
-    today = datetime.datetime.now(datetime.timezone.utc).date()
+def _ist_date_keys_last_7_days() -> list[str]:
+    """Return list of IST date strings for the last 7 days (including today)."""
+    today = datetime.datetime.now(IST).date()
     return [(today - datetime.timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
 
 async def store_daily_submission(user_id: int, count: int, utc_date: str | None = None) -> None:
-    """Store or update daily submission count for a user on a specific UTC date."""
-    utc_date = utc_date or _utc_date_key()
+    """Store or update daily submission count for a user on a specific IST date."""
+    utc_date = utc_date or _ist_date_key()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -249,8 +249,8 @@ async def fetch_record_weekly() -> tuple[int, int] | None:
 
 
 async def fetch_weekly_from_db(user_id: int) -> int | None:
-    """Calculate weekly count by summing daily counts from the last 7 UTC days."""
-    week_keys = _utc_date_keys_last_7_days()
+    """Calculate weekly count by summing daily counts from the last 7 IST days."""
+    week_keys = _ist_date_keys_last_7_days()
     placeholders = ",".join("?" * len(week_keys))
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
