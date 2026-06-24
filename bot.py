@@ -11,6 +11,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+import leetcode_api as lca
 import leetcode_graphql as lc
 import codeforces_api as cf
 import geeksforgeeks_api as gfg
@@ -37,9 +38,9 @@ GOODNIGHT_TITLE = "Good night"
 GOODNIGHT_BODY = "Wrap up, rest well, and we will see you tomorrow for more practice."
 
 LB_FOOTER = (
-    "Counts are accepted (AC) submissions per IST day (UTC+5:30) across linked LeetCode, "
+    "Counts are submissions per IST day (UTC+5:30) across linked LeetCode, "
     "Codeforces, GeeksforGeeks, and AtCoder profiles. "
-    f"LeetCode uses the recent AC list (up to {lc.RECENT_AC_FETCH_LIMIT} in the window)."
+    f"LeetCode uses total-solved delta (fall back to recent AC list up to {lc.RECENT_AC_FETCH_LIMIT})."
 )
 
 MEME_TIMES = [
@@ -146,6 +147,16 @@ async def setup_db() -> None:
             )
             """
         )
+        # Table to store LeetCode total-solved baselines for daily delta calculation
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS leetcode_baseline (
+                user_id INTEGER PRIMARY KEY,
+                date_str TEXT,
+                total_solved INTEGER
+            )
+            """
+        )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_daily_submissions_user_date "
             "ON daily_submissions(user_id, utc_date)"
@@ -197,6 +208,34 @@ async def store_daily_submission(user_id: int, count: int, date_str: str | None 
             VALUES (?, ?, ?)
             """,
             (user_id, date_str, count),
+        )
+        await db.commit()
+
+
+async def _get_leetcode_baseline(user_id: int, date_str: str | None = None) -> int | None:
+    """Return the total_solved baseline for the user on the given date, or None."""
+    date_str = date_str or _ist_date_key()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT date_str, total_solved FROM leetcode_baseline WHERE user_id = ?",
+            (user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            if row and str(row[0]) == date_str:
+                return int(row[1])
+    return None
+
+
+async def _set_leetcode_baseline(user_id: int, total_solved: int, date_str: str | None = None) -> None:
+    """Update the total_solved baseline for the user."""
+    date_str = date_str or _ist_date_key()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO leetcode_baseline (user_id, date_str, total_solved)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, date_str, total_solved),
         )
         await db.commit()
 
@@ -279,7 +318,20 @@ async def fetch_stats_for_all(
             ac_t, ac_w = None, None
 
             if lc_name:
-                lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
+                # Primary: alfa-leetcode-api (total-solved delta from baseline)
+                total = await lca.fetch_total_solved(http, lc_name)
+                if total is not None:
+                    today_key = _ist_date_key()
+                    baseline = await _get_leetcode_baseline(uid, today_key)
+                    if baseline is None:
+                        await _set_leetcode_baseline(uid, total, today_key)
+                        lc_t = 0
+                    else:
+                        lc_t = max(total - baseline, 0)
+                    # Weekly is unaffected by this new approach; keep db-based
+                else:
+                    # Fallback: legacy graphql approach
+                    lc_t, lc_w = await lc.fetch_stats_today_and_week(http, lc_name)
             if cf_name:
                 cf_t, cf_w = await cf.fetch_stats_today_and_week(http, cf_name)
             if gfg_name:
@@ -378,7 +430,7 @@ async def leetcode_set(interaction: discord.Interaction, username: str) -> None:
         )
         return
 
-    if not await lc.user_exists(bot.http_lc, name):
+    if not await lca.user_exists(bot.http_lc, name):
         await interaction.response.send_message(
             "Could not find that LeetCode user. Check the spelling (case-sensitive).",
             ephemeral=True,

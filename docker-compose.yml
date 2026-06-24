@@ -1,10 +1,19 @@
 services:
+  leetcode-api:
+    image: alfaarghya/alfa-leetcode-api:2.0.4
+    container_name: leetcode_api
+    restart: unless-stopped
+    ports:
+      - "2026:3000"
+
   bot:
     build: .
     container_name: dsa_bot
     restart: unless-stopped
     env_file:
       - .env
+    depends_on:
+      - leetcode-api
     # We map the local directory so the SQLite DB persists.
     # Alternatively, you can use a volume:
     # volumes:
