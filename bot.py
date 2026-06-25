@@ -51,11 +51,13 @@ MEME_TIMES = [
 DISABLE_MEMES = os.getenv("DISABLE_MEMES", "0").strip().lower() in ("1", "true", "yes")
 
 SCHEDULE_TIMES = [
+    datetime.time(0, 0, tzinfo=IST),
     datetime.time(8, 0, tzinfo=IST),
     datetime.time(12, 0, tzinfo=IST),
     datetime.time(21, 0, tzinfo=IST),
     datetime.time(23, 59, tzinfo=IST),
-] + MEME_TIMES
+]
+# ] + MEME_TIMES
 
 MEME_DIR = "memes"
 
@@ -893,7 +895,17 @@ async def ist_schedule() -> None:
     now = datetime.datetime.now(IST)
     hour = now.hour
 
-    if hour == 8:
+    if hour == 0:
+        # Midnight: silently capture today's baseline for all users (no leaderboard posted)
+        rows = await fetch_linked_users()
+        today_key = _ist_date_key()
+        for uid, lc_name, _, _, _ in rows:
+            if lc_name:
+                total = await lca.fetch_total_solved(bot.http_lc, lc_name)
+                if total is not None:
+                    await _set_leetcode_baseline(uid, total, today_key)
+        return
+    elif hour == 8:
         embed = discord.Embed(
             title=MORNING_TITLE,
             description=MORNING_BODY,
